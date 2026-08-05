@@ -70,10 +70,14 @@ pub struct ZonesConfig {
     pub layouts: HashMap<String, ZoneLayout>,      // layout id -> layout
     pub per_output: HashMap<OutputMatch, String>,  // output -> layout id
     pub per_workspace: HashMap<String, String>,    // workspace id -> layout id (wins)
-    pub app_memory: HashMap<String, (String, Vec<usize>)>, // app_id -> layout, zones
     pub remember_apps: bool,
     pub shortcuts: ZoneShortcuts,
 }
+
+// Its own `zone_app_memory` config key, not a field above: the compositor
+// rewrites this on every drop-snap, and sharing a key with the layouts the
+// editor writes on save had the two clobbering each other.
+pub type AppZoneMemories = HashMap<String, AppZoneMemory>; // app id -> layout, zones
 ```
 
 Reuse `cosmic_comp_config::workspace::OutputMatch` (name + EDID) for monitor

@@ -131,6 +131,17 @@ The compositor watches this file, so edits apply without a restart.
 A window records the gap it was snapped with, so changing `gap` affects new
 snaps rather than re-laying out windows already sitting in zones.
 
+With `remember_apps` on, the compositor records where each app was last snapped
+under a separate key:
+
+```
+~/.config/cosmic/com.system76.CosmicComp/v1/zone_app_memory
+```
+
+It is separate because it is rewritten on every drop-snap, while `zones` is
+rewritten when the editor saves; sharing one key meant a snap and a save could
+overwrite each other. Deleting this file clears the memory and nothing else.
+
 ### Keyboard shortcuts
 
 Movement uses Ctrl+Alt, which COSMIC does not bind — every arrow shortcut it

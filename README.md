@@ -154,6 +154,14 @@ COSMIC_BACKEND=winit cargo run
   not remove it.
 - Multi-monitor is implemented but has never been exercised on hardware with
   more than one display.
+- `snap_to` maps the window into the `Space` as well as recording its snap
+  state, so unmaximize, unminimize and workspace-move all route through it.
+  That path has no automated coverage — the geometry it computes is unit
+  tested, the mapping it performs is not.
+- The editor's state layer (save scoping, layout forking) is untested:
+  `cosmic::Application` state needs a `Core` and live Wayland outputs, neither
+  of which can be built in a unit test. Only the pure canvas geometry is
+  covered.
 
 ## License
 
