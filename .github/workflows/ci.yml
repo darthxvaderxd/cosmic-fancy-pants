@@ -1,10 +1,12 @@
 name: Continuous Integration
 
+# This fork works on `main`; upstream cosmic-comp uses `master`. Both are
+# listed so a rebase onto upstream keeps triggering.
 on:
     push:
-        branches: [master]
+        branches: [main, master]
     pull_request:
-        branches: [master]
+        branches: [main, master]
 
 jobs:
     format:
@@ -25,6 +27,9 @@ jobs:
                   key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
             - name: Format
               run: cargo +stable fmt --all -- --check
+            # The editor is in `workspace.exclude`, so `--all` does not reach it.
+            - name: Format (editor)
+              run: cargo +stable fmt --all --manifest-path cosmic-fancy-pants-editor/Cargo.toml -- --check
 
     clippy-check:
         runs-on: ubuntu-latest
@@ -44,8 +49,11 @@ jobs:
                   key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
             - name: System dependencies
               run: sudo apt-get update; sudo apt-get install libudev-dev libgbm-dev libxkbcommon-dev libegl1-mesa-dev libwayland-dev libinput-dev libdbus-1-dev libsystemd-dev libseat-dev libdisplay-info-dev
+            # `--workspace --all-targets`: a bare `cargo clippy` at the root
+            # only lints the root package's lib, missing cosmic-comp-config and
+            # every test module.
             - name: Clippy
-              run: cargo +stable clippy --all-features -- -D warnings
+              run: cargo +stable clippy --workspace --all-features --all-targets -- -D warnings
 
     check-features:
         runs-on: ubuntu-latest
@@ -98,7 +106,39 @@ jobs:
                   ninja -C build
                   sudo meson install -C build
                   sudo ldconfig
+            # `--workspace`: without it cargo only selects the root package,
+            # which skips every cosmic-comp-config test — the zone model is the
+            # most thoroughly tested part of this fork.
             - name: Test features
               env:
                   RUST_BACKTRACE: full
-              run: cargo test --all-features
+              run: cargo test --workspace --all-features
+
+    # The editor is a standalone workspace (`workspace.exclude` in the root
+    # manifest), so nothing above builds or tests it. Its own job does.
+    editor:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout sources
+              uses: actions/checkout@v6
+            - name: Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  components: clippy
+            - name: Cargo cache
+              uses: actions/cache@v5
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                  key: ${{ runner.os }}-cargo-editor-${{ hashFiles('cosmic-fancy-pants-editor/Cargo.toml') }}
+            - name: System dependencies
+              run: sudo apt-get update; sudo apt-get install libxkbcommon-dev libwayland-dev libdbus-1-dev libudev-dev libinput-dev
+            - name: Clippy
+              working-directory: cosmic-fancy-pants-editor
+              run: cargo +stable clippy --all-targets -- -D warnings
+            - name: Test
+              working-directory: cosmic-fancy-pants-editor
+              env:
+                  RUST_BACKTRACE: full
+              run: cargo +stable test

@@ -2540,6 +2540,9 @@ fn mapped_output_for_device<'a, D: Device + 'static>(
     map_to_output.or_else(|| shell.builtin_output())
 }
 
+// Inherited from upstream cosmic-comp, not this fork. Allowed rather than
+// fixed so the file stays rebase-clean; drop it if upstream tidies it up.
+#[allow(clippy::needless_borrow)]
 pub fn update_output_image_copy_cursor_position(
     shell: &Shell,
     clock: &Clock<Monotonic>,
