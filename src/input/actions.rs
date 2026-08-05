@@ -1152,12 +1152,7 @@ impl State {
             };
             // Assigning pins whatever the monitor currently resolves to, so the
             // workspace keeps that layout even if the monitor default changes.
-            match workspace
-                .id
-                .as_ref()
-                .and_then(|id| zones.per_workspace.get(id))
-                .or_else(|| zones.per_output.get(&output_match))
-            {
+            match zones.layout_id_for(&output_match, workspace.id.as_deref()) {
                 Some(id) => id.clone(),
                 None => return,
             }

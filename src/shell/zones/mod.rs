@@ -30,13 +30,19 @@ use crate::{
 
 /// Does the currently held modifier set arm zone snapping?
 ///
-/// Exact match, not a subset: holding Shift+Super with Shift configured should
-/// not arm zones, since Super-drag has its own meaning.
+/// The configured modifiers must all be held; anything *extra* is ignored.
+/// An exact match would break the common case, because Super+drag is how
+/// COSMIC starts a window move — requiring `logo: false` made it impossible to
+/// arm zones from that gesture, leaving only title-bar drags working.
 pub fn modifiers_match(want: &ZoneModifiers, have: &ModifiersState) -> bool {
-    want.ctrl == have.ctrl
-        && want.alt == have.alt
-        && want.shift == have.shift
-        && want.logo == have.logo
+    // An empty configuration would otherwise arm zones on every drag.
+    if !(want.ctrl || want.alt || want.shift || want.logo) {
+        return false;
+    }
+    (!want.ctrl || have.ctrl)
+        && (!want.alt || have.alt)
+        && (!want.shift || have.shift)
+        && (!want.logo || have.logo)
 }
 
 /// A layout resolved against a specific output, ready to hit-test and render.
@@ -89,10 +95,7 @@ impl ZoneContext {
             return None;
         }
 
-        let layout_id = workspace_id
-            .and_then(|id| config.per_workspace.get(id))
-            .or_else(|| config.per_output.get(&output_match))
-            .cloned()?;
+        let layout_id = config.layout_id_for(&output_match, workspace_id).cloned()?;
 
         let area = {
             let layers = layer_map_for_output(output);
@@ -388,14 +391,45 @@ mod tests {
     }
 
     #[test]
-    fn modifiers_must_match_exactly() {
+    fn the_configured_modifier_must_be_held() {
         let want = ZoneModifiers::default(); // shift
         let mut have = ModifiersState::default();
+        assert!(!modifiers_match(&want, &have), "nothing held");
         have.shift = true;
         assert!(modifiers_match(&want, &have));
+    }
 
-        // Shift+Super is a different gesture and must not arm zones.
-        have.logo = true;
+    /// Regression: Super+drag is COSMIC's window-move gesture, so Super is held
+    /// for most drags. Requiring it to be absent made zones unreachable that
+    /// way, which is how this shipped broken.
+    #[test]
+    fn extra_modifiers_do_not_block_arming() {
+        let want = ZoneModifiers::default(); // shift
+        let have = ModifiersState {
+            shift: true,
+            logo: true,
+            ..Default::default()
+        };
+        assert!(
+            modifiers_match(&want, &have),
+            "Super+Shift+drag must arm zones"
+        );
+    }
+
+    /// A configuration with no modifiers would otherwise arm on every drag,
+    /// making plain window moves impossible.
+    #[test]
+    fn an_empty_modifier_set_never_arms() {
+        let want = ZoneModifiers {
+            ctrl: false,
+            alt: false,
+            shift: false,
+            logo: false,
+        };
+        let have = ModifiersState {
+            shift: true,
+            ..Default::default()
+        };
         assert!(!modifiers_match(&want, &have));
     }
 }
@@ -529,9 +563,7 @@ pub fn remembered_zone(
         name: output.name(),
         edid: output.edid().cloned(),
     };
-    let active = workspace_id
-        .and_then(|id| config.per_workspace.get(id))
-        .or_else(|| config.per_output.get(&output_match))?;
+    let active = config.layout_id_for(&output_match, workspace_id)?;
     if active != &memory.layout {
         return None;
     }
