@@ -1,0 +1,118 @@
+# Installing COSMIC Fancy Pants
+
+Zones live inside the compositor, so using them means running a patched
+`cosmic-comp` in place of the packaged one. The editor on its own does nothing:
+stock `cosmic-comp` ignores the `zones` config key.
+
+## Install
+
+Both binaries go to `/usr/local/bin`, which precedes `/usr/bin` in the session
+`PATH`. `cosmic-session` resolves `cosmic-comp` by name, so the patched build
+shadows the packaged one without modifying or removing it — and an `apt upgrade`
+of the `cosmic-comp` package cannot clobber it.
+
+```sh
+cargo build --release
+cargo build --release --manifest-path cosmic-fancy-pants-editor/Cargo.toml
+
+sudo install -Dm755 target/release/cosmic-comp /usr/local/bin/cosmic-comp
+sudo install -Dm755 \
+    cosmic-fancy-pants-editor/target/release/cosmic-fancy-pants-editor \
+    /usr/local/bin/cosmic-fancy-pants-editor
+sudo install -Dm644 \
+    cosmic-fancy-pants-editor/data/dev.nilfactor.CosmicFancyPantsEditor.desktop \
+    /usr/share/applications/dev.nilfactor.CosmicFancyPantsEditor.desktop
+```
+
+Then log out and back in. Verify what is running:
+
+```sh
+readlink -f /proc/$(pgrep -x cosmic-comp)/exe   # expect /usr/local/bin/cosmic-comp
+```
+
+## Uninstall
+
+```sh
+sudo rm -f /usr/local/bin/cosmic-comp \
+           /usr/local/bin/cosmic-fancy-pants-editor \
+           /usr/share/applications/dev.nilfactor.CosmicFancyPantsEditor.desktop
+```
+
+Log out and back in; the packaged `/usr/bin/cosmic-comp` takes over again.
+
+## If the session will not start
+
+A compositor that fails to start leaves you without a desktop, so know the way
+out before installing. Switch to a TTY with **Ctrl+Alt+F3**, log in, and:
+
+```sh
+sudo rm /usr/local/bin/cosmic-comp
+sudo systemctl restart display-manager
+```
+
+That is the whole recovery: the packaged compositor is untouched throughout.
+
+## Using it
+
+Zones are opt-in per monitor — nothing changes until a layout is assigned.
+
+1. Open **Zone Editor** from the app library, or press **Super+Shift+`**.
+2. Pick a template, drag the boundaries between zones to reshape it, and
+   **Save**. Editing a built-in template forks it to a custom layout rather than
+   redefining the template everywhere.
+3. Hold **Shift** while dragging a window. The layout appears, the zone under
+   the cursor highlights, and releasing snaps the window into it.
+
+Hovering near the edge shared by two adjacent zones targets both, snapping the
+window across their combined area.
+
+## Configuration
+
+Settings live under the `zones` key of `com.system76.CosmicComp`:
+
+```
+~/.config/cosmic/com.system76.CosmicComp/v1/zones
+```
+
+The compositor watches this file, so edits apply without a restart.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `true` | Master switch for zone snapping |
+| `modifier` | `shift` | Modifier that arms zones during a drag |
+| `spanning` | `true` | Allow a window to cover several adjacent zones |
+| `adjacent_highlight_distance` | `16` | Pixels from a shared edge that activate both zones |
+| `show_zone_numbers` | `true` | Draw zone numbers in the editor |
+| `inactive_opacity` | `50` | Opacity of non-targeted zones in the drag overlay |
+| `remember_apps` | `false` | Re-open an app in the zone it last occupied |
+
+### Keyboard shortcuts
+
+Only `open_editor` is bound by default. The rest are unbound because the
+obvious candidates collide with COSMIC's existing window bindings; set them
+explicitly if you want them.
+
+| Shortcut | Action |
+| --- | --- |
+| `open_editor` | Launch the editor (default **Super+Shift+`**) |
+| `snap_next` / `snap_prev` | Move the focused window between zones |
+| `grow_span` / `shrink_span` | Extend or contract across adjacent zones |
+| `assign_to_workspace` | Pin the monitor's layout to the active workspace |
+| `clear_workspace` | Drop that assignment, reverting to the monitor default |
+
+A binding looks like:
+
+```
+snap_next: Some((
+    modifiers: (ctrl: true, alt: true, shift: false, logo: false),
+    key: "Right",
+)),
+```
+
+`key` is an XKB keysym name — `Right`, `grave`, `w`.
+
+## Known gaps
+
+- The editor reshapes a layout but cannot split or merge zones, so custom
+  layouts inherit their zone count from the template they were forked from.
+- Workspace layouts are assigned by shortcut; the editor has no UI for it yet.
