@@ -52,6 +52,7 @@ use cosmic_comp_config::{
         OutputConfig, OutputInfo, OutputState, OutputsConfig, TransformDef, load_outputs,
     },
     workspace::WorkspaceConfig,
+    zones,
 };
 pub use key_bindings::{Action, PrivateAction, ZoneAction};
 use types::WlXkbConfig;
@@ -923,6 +924,13 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut 
                 if new != state.common.config.cosmic_conf.focus_follows_cursor_delay {
                     state.common.config.cosmic_conf.focus_follows_cursor_delay = new;
                 }
+            }
+            "zones" => {
+                // Both copies must be updated: the compositor reads the config
+                // copy, while window mapping reads the one cached on Shell.
+                let value = get_config::<zones::ZonesConfig>(&config, "zones");
+                state.common.config.cosmic_conf.zones = value.clone();
+                state.common.shell.write().set_zones_config(value);
             }
             "edge_snap_threshold" => {
                 let new = get_config::<u32>(&config, "edge_snap_threshold");

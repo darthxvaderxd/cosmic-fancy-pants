@@ -328,6 +328,13 @@ pub struct ZonesConfig {
     pub show_zone_numbers: bool,
     /// Opacity of non-targeted zones in the drag overlay, 0-100.
     pub inactive_opacity: u8,
+    /// Gap between zone-snapped windows, in logical pixels.
+    ///
+    /// `None` follows COSMIC's global window gap, so zones match the rest of
+    /// the desktop unless deliberately overridden.
+    // `serde(default)` so configs written before this existed still load.
+    #[serde(default)]
+    pub gap: Option<u32>,
     /// Auto-place a new window into the zone its app last occupied.
     pub remember_apps: bool,
     /// Layout id -> layout.
@@ -350,6 +357,7 @@ impl Default for ZonesConfig {
             adjacent_highlight_distance: 16,
             show_zone_numbers: true,
             inactive_opacity: 50,
+            gap: None,
             remember_apps: false,
             layouts: default_layouts(),
             per_output: HashMap::new(),
@@ -361,6 +369,34 @@ impl Default for ZonesConfig {
 }
 
 impl ZonesConfig {
+    /// Layout id assigned to a monitor.
+    ///
+    /// Falls back to matching on connector name when the full key misses.
+    /// Wayland does not expose EDID to clients, so the editor can only write
+    /// `edid: None`, while the compositor's own key carries the monitor's real
+    /// EDID. An exact lookup therefore never matches on hardware that reports
+    /// one, which silently disabled zones entirely.
+    pub fn layout_id_for_output(&self, output: &OutputMatch) -> Option<&String> {
+        self.per_output.get(output).or_else(|| {
+            self.per_output
+                .iter()
+                .find(|(key, _)| key.name == output.name)
+                .map(|(_, id)| id)
+        })
+    }
+
+    /// Layout id for an output/workspace pair. A per-workspace assignment wins
+    /// over the monitor default.
+    pub fn layout_id_for(
+        &self,
+        output: &OutputMatch,
+        workspace_id: Option<&str>,
+    ) -> Option<&String> {
+        workspace_id
+            .and_then(|id| self.per_workspace.get(id))
+            .or_else(|| self.layout_id_for_output(output))
+    }
+
     /// Layout for an output/workspace pair. A per-workspace assignment wins
     /// over the monitor default.
     pub fn layout_for(
@@ -368,10 +404,19 @@ impl ZonesConfig {
         output: &OutputMatch,
         workspace_id: Option<&str>,
     ) -> Option<&ZoneLayout> {
-        workspace_id
-            .and_then(|id| self.per_workspace.get(id))
-            .or_else(|| self.per_output.get(output))
+        self.layout_id_for(output, workspace_id)
             .and_then(|id| self.layouts.get(id))
+    }
+
+    /// Gaps to lay zones out with, honouring [`Self::gap`] when set.
+    ///
+    /// Only the inner gap is overridden; the outer value is left alone because
+    /// zone geometry never consults it.
+    pub fn gaps_or(&self, theme_gaps: (i32, i32)) -> (i32, i32) {
+        match self.gap {
+            Some(gap) => (theme_gaps.0, gap as i32),
+            None => theme_gaps,
+        }
     }
 
     /// `adjacent_highlight_distance` as a fraction of an output that is
@@ -670,6 +715,55 @@ mod tests {
         );
     }
 
+    /// Regression: the editor cannot see EDID and writes `edid: None`, while
+    /// the compositor's key carries the monitor's real EDID. Requiring an exact
+    /// match meant zones never resolved on any monitor that reports one.
+    #[test]
+    fn a_name_only_assignment_matches_an_output_with_edid() {
+        let mut cfg = ZonesConfig::default();
+        cfg.per_output.insert(
+            OutputMatch {
+                name: "HDMI-A-1".into(),
+                edid: None,
+            },
+            "columns-2".into(),
+        );
+
+        let with_edid = OutputMatch {
+            name: "HDMI-A-1".into(),
+            edid: Some(crate::EdidProduct {
+                manufacturer: ['D', 'E', 'L'],
+                product: 41341,
+                serial: Some(810436428),
+                manufacture_week: 29,
+                manufacture_year: 2022,
+                model_year: None,
+            }),
+        };
+        assert_eq!(
+            cfg.layout_for(&with_edid, None).map(|l| l.name.as_str()),
+            Some("Columns (2)"),
+        );
+    }
+
+    /// The fallback is by name, so a different connector must still miss.
+    #[test]
+    fn the_name_fallback_does_not_match_a_different_output() {
+        let mut cfg = ZonesConfig::default();
+        cfg.per_output.insert(
+            OutputMatch {
+                name: "HDMI-A-1".into(),
+                edid: None,
+            },
+            "columns-2".into(),
+        );
+        let other = OutputMatch {
+            name: "DP-2".into(),
+            edid: None,
+        };
+        assert!(cfg.layout_for(&other, None).is_none());
+    }
+
     #[test]
     fn unmapped_output_has_no_layout() {
         let cfg = ZonesConfig::default();
@@ -700,6 +794,33 @@ mod tests {
         let decoded: ZoneShortcuts = ron::from_str(old).expect("old config should still parse");
         assert!(decoded.assign_to_workspace.is_none());
         assert!(decoded.clear_workspace.is_none());
+    }
+
+    #[test]
+    fn gap_defaults_to_the_theme_value() {
+        let config = ZonesConfig::default();
+        assert_eq!(config.gap, None);
+        assert_eq!(config.gaps_or((4, 8)), (4, 8));
+    }
+
+    #[test]
+    fn an_explicit_gap_overrides_only_the_inner_value() {
+        let config = ZonesConfig {
+            gap: Some(20),
+            ..Default::default()
+        };
+        assert_eq!(config.gaps_or((4, 8)), (4, 20));
+    }
+
+    /// Configs written before the gap setting existed must still load.
+    #[test]
+    fn a_config_without_a_gap_still_loads() {
+        let mut cfg = ZonesConfig::default();
+        cfg.gap = Some(12);
+        let encoded = ron::ser::to_string(&cfg).unwrap();
+        let stripped = encoded.replace("gap:Some(12),", "");
+        let decoded: ZonesConfig = ron::from_str(&stripped).expect("should still parse");
+        assert_eq!(decoded.gap, None);
     }
 
     #[test]

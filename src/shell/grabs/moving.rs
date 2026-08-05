@@ -579,7 +579,7 @@ impl MoveGrab {
                     if stale {
                         let gaps = {
                             let gaps = state.common.theme.cosmic().gaps;
-                            (gaps.0 as i32, gaps.1 as i32)
+                            zones_config.gaps_or((gaps.0 as i32, gaps.1 as i32))
                         };
                         let workspace_id = shell
                             .active_space(&current_output)
@@ -1026,6 +1026,7 @@ impl Drop for MoveGrab {
                                         layout: zones.context.layout_id.clone(),
                                         zones: hit.zones.clone(),
                                         rect: hit.rect,
+                                        gap: zones.context.gap(),
                                     },
                                 );
 

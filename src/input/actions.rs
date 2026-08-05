@@ -1071,7 +1071,11 @@ impl State {
         // Read the theme before taking the shell lock to keep the borrow simple.
         let gaps = {
             let gaps = self.common.theme.cosmic().gaps;
-            (gaps.0 as i32, gaps.1 as i32)
+            self.common
+                .config
+                .cosmic_conf
+                .zones
+                .gaps_or((gaps.0 as i32, gaps.1 as i32))
         };
         let output = seat.focused_or_active_output();
 
@@ -1128,6 +1132,7 @@ impl State {
                 layout: context.layout_id.clone(),
                 zones: hit.zones,
                 rect: hit.rect,
+                gap: context.gap(),
             },
         );
     }
@@ -1152,12 +1157,7 @@ impl State {
             };
             // Assigning pins whatever the monitor currently resolves to, so the
             // workspace keeps that layout even if the monitor default changes.
-            match workspace
-                .id
-                .as_ref()
-                .and_then(|id| zones.per_workspace.get(id))
-                .or_else(|| zones.per_output.get(&output_match))
-            {
+            match zones.layout_id_for(&output_match, workspace.id.as_deref()) {
                 Some(id) => id.clone(),
                 None => return,
             }

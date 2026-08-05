@@ -66,6 +66,8 @@ pub enum Message {
     SelectLayout(cosmic::iced::window::Id, String),
     /// A boundary drag produced a new set of zones for this surface.
     ZonesEdited(cosmic::iced::window::Id, Vec<ZoneRect>),
+    /// Adjust the gap between snapped windows, in logical pixels.
+    SetGap(Option<u32>),
     Save,
     Cancel,
 }
@@ -333,6 +335,10 @@ impl cosmic::Application for Editor {
             }
             Message::ZonesEdited(id, zones) => {
                 self.apply_edit(id, zones);
+                Task::none()
+            }
+            Message::SetGap(gap) => {
+                self.config.gap = gap;
                 Task::none()
             }
             Message::Save => self.save(),
