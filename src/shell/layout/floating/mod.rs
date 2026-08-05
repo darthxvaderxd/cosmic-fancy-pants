@@ -1771,17 +1771,34 @@ impl FloatingLayout {
         }
     }
 
-    /// Snap a window to a corner or a zone and apply the resulting geometry.
-    pub fn snap_to(&self, mapped: &CosmicMapped, state: &FloatingTiled) {
+    /// Snap a window to a corner or a zone and place it there.
+    ///
+    /// `set_geometry` alone only tells the element its new geometry; it does
+    /// not move it within the `Space`, and nothing reconciles the two later
+    /// (`recalculate` works from the Space's current geometry, not from
+    /// `floating_tiled`). So this maps the element as well — the same thing
+    /// `move_element` does for directional corner snapping.
+    pub fn snap_to(&mut self, mapped: &CosmicMapped, state: &FloatingTiled) {
+        let previous = self.space.element_geometry(mapped).map(RectExt::as_local);
+        let snapped_geo = self.snapped_geometry(state);
+
         *mapped.floating_tiled.lock().unwrap() = Some(state.clone());
         mapped.set_tiled(true);
-        let snapped_geo = self.snapped_geometry(state);
+        mapped.set_maximized(false);
+        mapped.moved_since_mapped.store(true, Ordering::SeqCst);
+
         let output = self.space.outputs().next().unwrap();
         mapped.set_geometry(snapped_geo.to_global(output));
+        self.map_internal(
+            mapped.clone(),
+            Some(snapped_geo.loc),
+            Some(snapped_geo.size.as_logical()),
+            previous,
+        );
         mapped.configure();
     }
 
-    pub fn snap_to_corner(&self, mapped: &CosmicMapped, corners: &TiledCorners) {
+    pub fn snap_to_corner(&mut self, mapped: &CosmicMapped, corners: &TiledCorners) {
         self.snap_to(mapped, &FloatingTiled::Corner(*corners));
     }
 

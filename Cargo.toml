@@ -8,6 +8,7 @@ rust-version = "1.93"
 
 [workspace]
 members = ["cosmic-comp-config"]
+exclude = ["cosmic-fancy-pants-editor"]
 
 [dependencies]
 anyhow = { version = "1.0.102", features = ["backtrace"] }

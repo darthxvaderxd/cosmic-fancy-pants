@@ -1,0 +1,30 @@
+[package]
+name = "cosmic-fancy-pants-editor"
+version = "1.0.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Zone layout editor for COSMIC Fancy Pants"
+
+# Standalone workspace: the editor resolves its own dependency tree so the
+# compositor's pinned graph stays untouched. Only cosmic-comp-config is shared.
+[workspace]
+
+[dependencies]
+cosmic-comp-config = { path = "../cosmic-comp-config" }
+cosmic-config = { git = "https://github.com/pop-os/libcosmic", rev = "d922ac38", features = [
+    "macro",
+] }
+libcosmic = { git = "https://github.com/pop-os/libcosmic", rev = "d922ac38", features = [
+    "wayland",
+    "winit",
+    "tokio",
+    "multi-window",
+] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.dev]
+# Line tables only. Full DWARF on libcosmic's deeply generic types crashed
+# rustc's debuginfo emission (SIGSEGV in LLVM's emitDwarfDIE) during
+# development; this keeps backtraces useful and avoids the failure mode.
+debug = 1
