@@ -21,7 +21,7 @@ use cosmic::{
 };
 use cosmic_comp_config::{
     workspace::OutputMatch,
-    zones::{DEFAULT_LAYOUT_ID, ZoneLayout, ZonesConfig},
+    zones::{DEFAULT_LAYOUT_ID, ZoneLayout, ZoneRect, ZonesConfig, default_layouts},
 };
 use cosmic_config::{ConfigGet, ConfigSet};
 use tracing::{error, info, warn};
@@ -64,6 +64,8 @@ pub enum Message {
     Output(OutputEvent, WlOutput, OutputInfoLite),
     /// Pick a different layout for the output showing this surface.
     SelectLayout(cosmic::iced::window::Id, String),
+    /// A boundary drag produced a new set of zones for this surface.
+    ZonesEdited(cosmic::iced::window::Id, Vec<ZoneRect>),
     Save,
     Cancel,
 }
@@ -113,6 +115,48 @@ impl Editor {
                 (None, ZonesConfig::default())
             }
         }
+    }
+
+    /// Apply a boundary drag to the layout shown on `id`.
+    ///
+    /// Editing a built-in template in place would silently redefine it for
+    /// every monitor using it, so the first edit forks it into a custom layout
+    /// and repoints this output at the fork.
+    fn apply_edit(&mut self, id: cosmic::iced::window::Id, zones: Vec<ZoneRect>) {
+        let Some(output) = self.outputs.get(&id) else {
+            return;
+        };
+        let current = output.layout_id.clone();
+
+        let target = if default_layouts().contains_key(&current) {
+            let forked = self.next_custom_id();
+            let name = self
+                .config
+                .layouts
+                .get(&current)
+                .map(|l| format!("{} (edited)", l.name))
+                .unwrap_or_else(|| "Custom".to_string());
+            self.config
+                .layouts
+                .insert(forked.clone(), ZoneLayout { name, zones });
+            if let Some(output) = self.outputs.get_mut(&id) {
+                output.layout_id = forked.clone();
+            }
+            return;
+        } else {
+            current
+        };
+
+        if let Some(layout) = self.config.layouts.get_mut(&target) {
+            layout.zones = zones;
+        }
+    }
+
+    fn next_custom_id(&self) -> String {
+        (1..)
+            .map(|n| format!("custom-{n}"))
+            .find(|id| !self.config.layouts.contains_key(id))
+            .expect("an unused custom layout id always exists")
     }
 
     fn save(&mut self) -> Task<Message> {
@@ -285,6 +329,10 @@ impl cosmic::Application for Editor {
                 if let Some(output) = self.outputs.get_mut(&id) {
                     output.layout_id = layout_id;
                 }
+                Task::none()
+            }
+            Message::ZonesEdited(id, zones) => {
+                self.apply_edit(id, zones);
                 Task::none()
             }
             Message::Save => self.save(),

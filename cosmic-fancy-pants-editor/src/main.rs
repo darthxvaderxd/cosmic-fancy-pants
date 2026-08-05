@@ -9,6 +9,7 @@
 
 mod overlay;
 mod state;
+mod zone_canvas;
 
 use cosmic::app::Settings;
 
