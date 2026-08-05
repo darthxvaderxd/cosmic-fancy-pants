@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Zone Editor
+GenericName=Window Zone Layout Editor
+Comment=Create and edit window snapping zones for COSMIC
+Exec=cosmic-fancy-pants-editor
+Icon=preferences-desktop-display-symbolic
+Terminal=false
+Type=Application
+Categories=Settings;DesktopSettings;
+Keywords=zones;snap;tiling;layout;window;fancy;
+StartupNotify=false
+X-Purism-FormFactor=Workstation;
