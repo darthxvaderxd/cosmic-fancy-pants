@@ -8,7 +8,7 @@ use crate::{
         CosmicMapped, CosmicSurface, Direction, ManagedLayer,
         element::{CosmicMappedRenderElement, stack_hover::StackHover},
         focus::target::{KeyboardFocusTarget, PointerFocusTarget},
-        layout::floating::TiledCorners,
+        layout::floating::{FloatingTiled, TiledCorners},
         zones::{self, ZoneContext, ZoneHit},
     },
     utils::prelude::*,
@@ -1000,7 +1000,32 @@ impl Drop for MoveGrab {
                                 window_location.to_local(&workspace.output),
                             );
 
+                            // A zone target wins over edge snapping: the two are
+                            // mutually exclusive during the drag, and the user
+                            // was looking at the zone overlay when they let go.
                             if matches!(previous, ManagedLayer::Floating)
+                                && let Some(zones) = grab_state.zones.as_ref()
+                                && let Some(hit) = zones.target.as_ref()
+                            {
+                                // As below: `last_geometry` holds the pre-drag
+                                // geometry (set in FloatingLayout::unmap), and
+                                // unsnapping restores that size. Preserve it
+                                // across the snap.
+                                let pre_drag_geometry = *window.last_geometry.lock().unwrap();
+
+                                workspace.floating_layer.snap_to(
+                                    &window,
+                                    &FloatingTiled::Zone {
+                                        layout: zones.context.layout_id.clone(),
+                                        zones: hit.zones.clone(),
+                                        rect: hit.rect,
+                                    },
+                                );
+
+                                if let Some(geo) = pre_drag_geometry {
+                                    *window.last_geometry.lock().unwrap() = Some(geo);
+                                }
+                            } else if matches!(previous, ManagedLayer::Floating)
                                 && let Some(sz) = grab_state.snapping_zone
                             {
                                 // `last_geometry` was set to the pre-drag geometry(in FloatingLayout::unmap).
