@@ -58,6 +58,9 @@ pub struct ZoneContext {
     /// over what panels and docks leave behind, not the raw output.
     area: Rectangle<i32, Logical>,
     gaps: (i32, i32),
+    /// Gap override in force when this was resolved, recorded onto each snap so
+    /// placement matches what the overlay drew.
+    gap: Option<u32>,
     /// Shared-edge span threshold, in fraction units. Zero disables spanning.
     edge_threshold: f64,
 }
@@ -112,8 +115,14 @@ impl ZoneContext {
             layout,
             area,
             gaps,
+            gap: config.gap,
             edge_threshold,
         })
+    }
+
+    /// Gap override to stamp onto snaps made from this layout.
+    pub fn gap(&self) -> Option<u32> {
+        self.gap
     }
 
     pub fn len(&self) -> usize {
@@ -193,6 +202,7 @@ impl ZoneContext {
             layout,
             area,
             gaps,
+            gap: None,
             edge_threshold,
         }
     }
@@ -574,5 +584,6 @@ pub fn remembered_zone(
         layout: memory.layout.clone(),
         zones: memory.zones.clone(),
         rect,
+        gap: config.gap,
     })
 }

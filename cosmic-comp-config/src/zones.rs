@@ -328,6 +328,13 @@ pub struct ZonesConfig {
     pub show_zone_numbers: bool,
     /// Opacity of non-targeted zones in the drag overlay, 0-100.
     pub inactive_opacity: u8,
+    /// Gap between zone-snapped windows, in logical pixels.
+    ///
+    /// `None` follows COSMIC's global window gap, so zones match the rest of
+    /// the desktop unless deliberately overridden.
+    // `serde(default)` so configs written before this existed still load.
+    #[serde(default)]
+    pub gap: Option<u32>,
     /// Auto-place a new window into the zone its app last occupied.
     pub remember_apps: bool,
     /// Layout id -> layout.
@@ -350,6 +357,7 @@ impl Default for ZonesConfig {
             adjacent_highlight_distance: 16,
             show_zone_numbers: true,
             inactive_opacity: 50,
+            gap: None,
             remember_apps: false,
             layouts: default_layouts(),
             per_output: HashMap::new(),
@@ -379,7 +387,11 @@ impl ZonesConfig {
 
     /// Layout id for an output/workspace pair. A per-workspace assignment wins
     /// over the monitor default.
-    pub fn layout_id_for(&self, output: &OutputMatch, workspace_id: Option<&str>) -> Option<&String> {
+    pub fn layout_id_for(
+        &self,
+        output: &OutputMatch,
+        workspace_id: Option<&str>,
+    ) -> Option<&String> {
         workspace_id
             .and_then(|id| self.per_workspace.get(id))
             .or_else(|| self.layout_id_for_output(output))
@@ -394,6 +406,17 @@ impl ZonesConfig {
     ) -> Option<&ZoneLayout> {
         self.layout_id_for(output, workspace_id)
             .and_then(|id| self.layouts.get(id))
+    }
+
+    /// Gaps to lay zones out with, honouring [`Self::gap`] when set.
+    ///
+    /// Only the inner gap is overridden; the outer value is left alone because
+    /// zone geometry never consults it.
+    pub fn gaps_or(&self, theme_gaps: (i32, i32)) -> (i32, i32) {
+        match self.gap {
+            Some(gap) => (theme_gaps.0, gap as i32),
+            None => theme_gaps,
+        }
     }
 
     /// `adjacent_highlight_distance` as a fraction of an output that is
@@ -699,7 +722,10 @@ mod tests {
     fn a_name_only_assignment_matches_an_output_with_edid() {
         let mut cfg = ZonesConfig::default();
         cfg.per_output.insert(
-            OutputMatch { name: "HDMI-A-1".into(), edid: None },
+            OutputMatch {
+                name: "HDMI-A-1".into(),
+                edid: None,
+            },
             "columns-2".into(),
         );
 
@@ -725,10 +751,16 @@ mod tests {
     fn the_name_fallback_does_not_match_a_different_output() {
         let mut cfg = ZonesConfig::default();
         cfg.per_output.insert(
-            OutputMatch { name: "HDMI-A-1".into(), edid: None },
+            OutputMatch {
+                name: "HDMI-A-1".into(),
+                edid: None,
+            },
             "columns-2".into(),
         );
-        let other = OutputMatch { name: "DP-2".into(), edid: None };
+        let other = OutputMatch {
+            name: "DP-2".into(),
+            edid: None,
+        };
         assert!(cfg.layout_for(&other, None).is_none());
     }
 
@@ -762,6 +794,33 @@ mod tests {
         let decoded: ZoneShortcuts = ron::from_str(old).expect("old config should still parse");
         assert!(decoded.assign_to_workspace.is_none());
         assert!(decoded.clear_workspace.is_none());
+    }
+
+    #[test]
+    fn gap_defaults_to_the_theme_value() {
+        let config = ZonesConfig::default();
+        assert_eq!(config.gap, None);
+        assert_eq!(config.gaps_or((4, 8)), (4, 8));
+    }
+
+    #[test]
+    fn an_explicit_gap_overrides_only_the_inner_value() {
+        let config = ZonesConfig {
+            gap: Some(20),
+            ..Default::default()
+        };
+        assert_eq!(config.gaps_or((4, 8)), (4, 20));
+    }
+
+    /// Configs written before the gap setting existed must still load.
+    #[test]
+    fn a_config_without_a_gap_still_loads() {
+        let mut cfg = ZonesConfig::default();
+        cfg.gap = Some(12);
+        let encoded = ron::ser::to_string(&cfg).unwrap();
+        let stripped = encoded.replace("gap:Some(12),", "");
+        let decoded: ZonesConfig = ron::from_str(&stripped).expect("should still parse");
+        assert_eq!(decoded.gap, None);
     }
 
     #[test]

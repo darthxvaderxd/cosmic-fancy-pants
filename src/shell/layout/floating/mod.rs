@@ -285,6 +285,9 @@ pub enum FloatingTiled {
         /// Zones covered; more than one index means a span.
         zones: Vec<usize>,
         rect: ZoneRect,
+        /// Gap this zone was snapped with, so placement matches the overlay
+        /// even if the setting changes afterwards. `None` follows the theme.
+        gap: Option<u32>,
     },
 }
 
@@ -293,6 +296,14 @@ impl FloatingTiled {
     ///
     /// Used where a code path only understands corner snapping — notably
     /// directional (arrow-key) moves, which treat a zoned window as unsnapped.
+    /// Gap override this snap carries, if any.
+    pub fn gap(&self) -> Option<u32> {
+        match self {
+            FloatingTiled::Zone { gap, .. } => *gap,
+            FloatingTiled::Corner(_) => None,
+        }
+    }
+
     pub fn corner(&self) -> Option<TiledCorners> {
         match self {
             FloatingTiled::Corner(corner) => Some(*corner),
@@ -403,7 +414,8 @@ impl FloatingLayout {
         {
             let tiled_state = mapped.floating_tiled.lock().unwrap().clone();
             if let Some(tiled_state) = tiled_state {
-                let geometry = tiled_state.relative_geometry(output_geometry, self.gaps());
+                let geometry =
+                    tiled_state.relative_geometry(output_geometry, self.gaps_for(&tiled_state));
                 self.map_internal(
                     mapped,
                     Some(geometry.loc),
@@ -1272,7 +1284,9 @@ impl FloatingLayout {
                         output_geometry,
                         current_geometry,
                         tiled_state.as_ref(),
-                        self.gaps(),
+                        tiled_state
+                            .as_ref()
+                            .map_or_else(|| self.gaps(), |state| self.gaps_for(state)),
                     )
                 } else {
                     current_geometry
@@ -1626,15 +1640,24 @@ impl FloatingLayout {
 
             let maybe_map = if let Some(anim) = self.animations.get(elem) {
                 let original_geo = anim.previous_geometry();
+                // Locked once and reused: `std::sync::Mutex` is not reentrant,
+                // and two `lock()` calls in one expression deadlock, because
+                // the first guard is a temporary that lives until the end of
+                // the statement.
+                let tiled_state = elem.floating_tiled.lock().unwrap();
+                let gaps = tiled_state
+                    .as_ref()
+                    .map_or_else(|| self.gaps(), |state| self.gaps_for(state));
                 geometry = anim.geometry(
                     output_geometry,
                     self.space
                         .element_geometry(elem)
                         .map(RectExt::as_local)
                         .unwrap_or(geometry),
-                    elem.floating_tiled.lock().unwrap().as_ref(),
-                    self.gaps(),
+                    tiled_state.as_ref(),
+                    gaps,
                 );
+                drop(tiled_state);
 
                 let buffer_size = elem.geometry().size;
                 let scale = Scale {
@@ -1807,12 +1830,26 @@ impl FloatingLayout {
         let layers = layer_map_for_output(&output);
         let non_exclusive = layers.non_exclusive_zone();
         std::mem::drop(layers);
-        state.relative_geometry(non_exclusive, self.gaps())
+        state.relative_geometry(non_exclusive, self.gaps_for(state))
     }
 
     fn gaps(&self) -> (i32, i32) {
         let g = self.theme.cosmic().gaps;
         (g.0 as i32, g.1 as i32)
+    }
+
+    /// Gaps to lay a snapped window out with.
+    ///
+    /// A zone carries the gap it was snapped with, so placement uses the same
+    /// spacing the drag overlay previewed. Deriving it from the theme here
+    /// instead would land the window somewhere other than the rectangle the
+    /// user was shown.
+    fn gaps_for(&self, state: &FloatingTiled) -> (i32, i32) {
+        let gaps = self.gaps();
+        match state.gap() {
+            Some(gap) => (gaps.0, gap as i32),
+            None => gaps,
+        }
     }
 }
 
@@ -1924,5 +1961,55 @@ mod tests {
         );
         let sliver = zone_relative_geometry(ZoneRect::new(0.0, 0.0, 0.005, 0.005), output, (0, 64));
         assert!(sliver.size.w >= 1 && sliver.size.h >= 1, "{sliver:?}");
+    }
+}
+
+#[cfg(test)]
+mod gap_tests {
+    use super::*;
+
+    /// Regression: placement recomputes geometry from the snap state, and used
+    /// to derive gaps from the theme. The drag overlay previewed the zone gap,
+    /// so a window landed with different spacing than the user was shown.
+    #[test]
+    fn a_zone_carries_its_own_gap() {
+        let output = Rectangle::new(
+            Point::<i32, Logical>::from((0, 0)),
+            Size::<i32, Logical>::from((1000, 1000)),
+        );
+        let rect = ZoneRect::new(0.0, 0.0, 0.5, 1.0);
+
+        let themed = FloatingTiled::Zone {
+            layout: "l".into(),
+            zones: vec![0],
+            rect,
+            gap: None,
+        };
+        let zero = FloatingTiled::Zone {
+            layout: "l".into(),
+            zones: vec![0],
+            rect,
+            gap: Some(0),
+        };
+
+        assert_eq!(themed.gap(), None);
+        assert_eq!(zero.gap(), Some(0));
+
+        // With no gap the zone reaches the output edges exactly.
+        let flush = zero.relative_geometry(output, (0, 0));
+        assert_eq!(flush.loc.x, 0);
+        assert_eq!(flush.size.w, 500);
+
+        // With a gap it is inset, and differs from the ungapped result.
+        let inset = themed.relative_geometry(output, (0, 16));
+        assert!(inset.loc.x > flush.loc.x, "{inset:?} vs {flush:?}");
+        assert!(inset.size.w < flush.size.w);
+    }
+
+    /// Corner snapping never overrides the theme, so the two kinds of snap can
+    /// legitimately use different spacing.
+    #[test]
+    fn corner_snaps_have_no_gap_override() {
+        assert_eq!(FloatingTiled::Corner(TiledCorners::Left).gap(), None);
     }
 }

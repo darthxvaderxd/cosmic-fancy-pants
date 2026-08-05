@@ -1071,7 +1071,11 @@ impl State {
         // Read the theme before taking the shell lock to keep the borrow simple.
         let gaps = {
             let gaps = self.common.theme.cosmic().gaps;
-            (gaps.0 as i32, gaps.1 as i32)
+            self.common
+                .config
+                .cosmic_conf
+                .zones
+                .gaps_or((gaps.0 as i32, gaps.1 as i32))
         };
         let output = seat.focused_or_active_output();
 
@@ -1128,6 +1132,7 @@ impl State {
                 layout: context.layout_id.clone(),
                 zones: hit.zones,
                 rect: hit.rect,
+                gap: context.gap(),
             },
         );
     }

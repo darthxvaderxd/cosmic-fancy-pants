@@ -59,12 +59,16 @@ struct Drag {
 #[derive(Debug, Default)]
 pub struct CanvasState {
     dragging: Option<Drag>,
+    /// Tracked from keyboard events; mouse events do not carry modifiers.
+    modifiers: cosmic::iced::keyboard::Modifiers,
 }
 
 pub struct ZoneCanvas<'a> {
     pub zones: &'a [ZoneRect],
     pub surface_id: cosmic::iced::window::Id,
     pub show_numbers: bool,
+    /// Gap between snapped windows, drawn so the setting is visible here.
+    pub gap: f32,
 }
 
 /// Interior boundaries of a layout.
@@ -147,6 +151,102 @@ pub fn move_divider(zones: &[ZoneRect], divider: Divider, to: f64) -> Option<Vec
     Some(out)
 }
 
+/// Split a zone in two at `at`, measured along `axis`.
+///
+/// `axis` names the orientation of the new boundary, matching [`Divider`]:
+/// a vertical split produces side-by-side zones. Returns `None` if either half
+/// would be unusably small, so a stray click cannot shave off a sliver.
+pub fn split_zone(zones: &[ZoneRect], index: usize, at: f64, axis: Axis) -> Option<Vec<ZoneRect>> {
+    let zone = *zones.get(index)?;
+
+    let (first, second) = match axis {
+        Axis::Vertical => {
+            if at - zone.x < MIN_FRACTION || zone.right() - at < MIN_FRACTION {
+                return None;
+            }
+            (
+                ZoneRect::new(zone.x, zone.y, at - zone.x, zone.h),
+                ZoneRect::new(at, zone.y, zone.right() - at, zone.h),
+            )
+        }
+        Axis::Horizontal => {
+            if at - zone.y < MIN_FRACTION || zone.bottom() - at < MIN_FRACTION {
+                return None;
+            }
+            (
+                ZoneRect::new(zone.x, zone.y, zone.w, at - zone.y),
+                ZoneRect::new(zone.x, at, zone.w, zone.bottom() - at),
+            )
+        }
+    };
+
+    let mut out = zones.to_vec();
+    out[index] = first;
+    // Inserted next to its sibling so zone numbers stay in reading order.
+    out.insert(index + 1, second);
+    Some(out)
+}
+
+/// Remove a boundary, merging the zones on either side of it.
+///
+/// Zones are paired across the boundary only when they line up exactly on the
+/// perpendicular axis, so merging a grid column joins each row's pair and
+/// leaves a ragged layout untouched rather than producing overlaps. Returns
+/// `None` when nothing could be paired.
+pub fn merge_at(zones: &[ZoneRect], divider: Divider) -> Option<Vec<ZoneRect>> {
+    let mut out = zones.to_vec();
+    let mut merged_any = false;
+    let mut removed: Vec<usize> = Vec::new();
+
+    for i in 0..zones.len() {
+        if removed.contains(&i) {
+            continue;
+        }
+        let a = zones[i];
+        let ends_here = match divider.axis {
+            Axis::Vertical => (a.right() - divider.position).abs() < EPS,
+            Axis::Horizontal => (a.bottom() - divider.position).abs() < EPS,
+        };
+        if !ends_here {
+            continue;
+        }
+
+        let partner = (0..zones.len()).find(|&j| {
+            if j == i || removed.contains(&j) {
+                return false;
+            }
+            let b = zones[j];
+            match divider.axis {
+                Axis::Vertical => {
+                    (b.x - divider.position).abs() < EPS
+                        && (b.y - a.y).abs() < EPS
+                        && (b.h - a.h).abs() < EPS
+                }
+                Axis::Horizontal => {
+                    (b.y - divider.position).abs() < EPS
+                        && (b.x - a.x).abs() < EPS
+                        && (b.w - a.w).abs() < EPS
+                }
+            }
+        });
+
+        if let Some(j) = partner {
+            out[i] = a.union(&zones[j]);
+            removed.push(j);
+            merged_any = true;
+        }
+    }
+
+    if !merged_any {
+        return None;
+    }
+    removed.sort_unstable_by(|a, b| b.cmp(a));
+    for index in removed {
+        out.remove(index);
+    }
+    Some(out)
+}
+
 fn to_screen(zone: &ZoneRect, bounds: Rectangle) -> Rectangle {
     Rectangle {
         x: bounds.x + zone.x as f32 * bounds.width,
@@ -176,6 +276,25 @@ fn divider_at(zones: &[ZoneRect], bounds: Rectangle, cursor: Point) -> Option<Di
         .map(|(divider, _)| divider)
 }
 
+/// Cursor position as a fraction of the canvas.
+fn to_fraction(bounds: Rectangle, cursor: Point) -> (f64, f64) {
+    (
+        ((cursor.x - bounds.x) / bounds.width.max(1.0)) as f64,
+        ((cursor.y - bounds.y) / bounds.height.max(1.0)) as f64,
+    )
+}
+
+/// Index of the zone containing a fractional point, smallest first so a zone
+/// stacked on a larger one still wins.
+fn index_at(zones: &[ZoneRect], x: f64, y: f64) -> Option<usize> {
+    zones
+        .iter()
+        .enumerate()
+        .filter(|(_, z)| z.contains(x, y))
+        .min_by(|(_, a), (_, b)| a.area().total_cmp(&b.area()))
+        .map(|(i, _)| i)
+}
+
 fn cursor_fraction(divider: Divider, bounds: Rectangle, cursor: Point) -> f64 {
     match divider.axis {
         Axis::Vertical => ((cursor.x - bounds.x) / bounds.width.max(1.0)) as f64,
@@ -199,14 +318,55 @@ impl canvas::Program<Message, Theme, Renderer> for ZoneCanvas<'_> {
         let absolute = Point::new(bounds.x + position.x, bounds.y + position.y);
 
         match event {
+            Event::Keyboard(cosmic::iced::keyboard::Event::ModifiersChanged(modifiers)) => {
+                state.modifiers = *modifiers;
+                None
+            }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                // On a boundary: drag it. Anywhere else: split the zone there.
+                if let Some(divider) = divider_at(self.zones, bounds, absolute) {
+                    state.dragging = Some(Drag {
+                        divider,
+                        origin: self.zones.to_vec(),
+                        current: divider.position,
+                    });
+                    return Some(canvas::Action::capture());
+                }
+
+                let (fx, fy) = to_fraction(bounds, absolute);
+                let index = index_at(self.zones, fx, fy)?;
+                let zone = self.zones[index];
+                // Split along the longer side by default, which is what makes
+                // a wide zone become two columns; Shift picks the other axis.
+                let mut axis = if zone.w >= zone.h {
+                    Axis::Vertical
+                } else {
+                    Axis::Horizontal
+                };
+                if state.modifiers.shift() {
+                    axis = match axis {
+                        Axis::Vertical => Axis::Horizontal,
+                        Axis::Horizontal => Axis::Vertical,
+                    };
+                }
+                let at = match axis {
+                    Axis::Vertical => fx,
+                    Axis::Horizontal => fy,
+                };
+                let updated = split_zone(self.zones, index, at, axis)?;
+                Some(canvas::Action::publish(Message::ZonesEdited(
+                    self.surface_id,
+                    updated,
+                )))
+            }
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
+                // Right-click a boundary to delete it, merging across.
                 let divider = divider_at(self.zones, bounds, absolute)?;
-                state.dragging = Some(Drag {
-                    divider,
-                    origin: self.zones.to_vec(),
-                    current: divider.position,
-                });
-                Some(canvas::Action::capture())
+                let updated = merge_at(self.zones, divider)?;
+                Some(canvas::Action::publish(Message::ZonesEdited(
+                    self.surface_id,
+                    updated,
+                )))
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 let drag = state.dragging.as_mut()?;
@@ -278,11 +438,19 @@ impl canvas::Program<Message, Theme, Renderer> for ZoneCanvas<'_> {
                     ..bounds
                 },
             );
+            // Same rule the compositor uses: a full gap against an output edge,
+            // half a gap against an interior edge, so neighbours share one
+            // gutter. Drawing it here makes the padding setting visible.
+            let gap = |at_edge: bool| if at_edge { self.gap } else { self.gap / 2.0 };
+            let left = gap(zone.x <= EPS);
+            let top = gap(zone.y <= EPS);
+            let right = gap(zone.right() >= 1.0 - EPS);
+            let bottom = gap(zone.bottom() >= 1.0 - EPS);
             let inset = Rectangle {
-                x: rect.x + 2.0,
-                y: rect.y + 2.0,
-                width: (rect.width - 4.0).max(1.0),
-                height: (rect.height - 4.0).max(1.0),
+                x: rect.x + left,
+                y: rect.y + top,
+                width: (rect.width - left - right).max(1.0),
+                height: (rect.height - top - bottom).max(1.0),
             };
             let path = Path::rectangle(
                 Point::new(inset.x, inset.y),
@@ -444,6 +612,96 @@ mod tests {
             stale, first,
             "a stale base silently no-ops, which is the bug this guards"
         );
+    }
+
+    fn tiles_completely(zones: &[ZoneRect]) -> bool {
+        let area: f64 = zones.iter().map(|z| z.w * z.h).sum();
+        (area - 1.0).abs() < 1e-9
+    }
+
+    #[test]
+    fn splitting_produces_two_zones_that_still_tile() {
+        let zones = columns(2);
+        let split = split_zone(&zones, 0, 0.2, Axis::Vertical).unwrap();
+        assert_eq!(split.len(), 3);
+        assert!(tiles_completely(&split), "{split:?}");
+        assert!((split[0].w - 0.2).abs() < 1e-9);
+        assert!((split[1].x - 0.2).abs() < 1e-9);
+        assert!((split[1].w - 0.3).abs() < 1e-9);
+    }
+
+    /// The new zone is inserted beside its sibling so the numbering the user
+    /// sees stays in reading order rather than jumping to the end.
+    #[test]
+    fn a_split_zone_keeps_its_neighbours_in_order() {
+        let zones = columns(3);
+        let split = split_zone(&zones, 0, 0.15, Axis::Vertical).unwrap();
+        let xs: Vec<f64> = split.iter().map(|z| z.x).collect();
+        let mut sorted = xs.clone();
+        sorted.sort_by(|a, b| a.total_cmp(b));
+        assert_eq!(xs, sorted, "zones should stay left-to-right");
+    }
+
+    #[test]
+    fn splitting_horizontally_stacks_the_halves() {
+        let zones = vec![ZoneRect::new(0.0, 0.0, 1.0, 1.0)];
+        let split = split_zone(&zones, 0, 0.25, Axis::Horizontal).unwrap();
+        assert!((split[0].h - 0.25).abs() < 1e-9);
+        assert!((split[1].y - 0.25).abs() < 1e-9);
+        assert!(tiles_completely(&split));
+    }
+
+    /// A stray click near an edge must not shave off an unusable sliver.
+    #[test]
+    fn splitting_too_close_to_an_edge_is_refused() {
+        let zones = vec![ZoneRect::new(0.0, 0.0, 1.0, 1.0)];
+        assert!(split_zone(&zones, 0, 0.001, Axis::Vertical).is_none());
+        assert!(split_zone(&zones, 0, 0.999, Axis::Vertical).is_none());
+    }
+
+    #[test]
+    fn merging_removes_a_boundary_and_still_tiles() {
+        let zones = columns(3);
+        let divider = dividers(&zones)[0];
+        let merged = merge_at(&zones, divider).unwrap();
+        assert_eq!(merged.len(), 2);
+        assert!(tiles_completely(&merged), "{merged:?}");
+    }
+
+    /// Deleting a boundary in a grid should join every pair along it, not just
+    /// the first, or the layout would be left with a hole.
+    #[test]
+    fn merging_a_grid_column_joins_every_row() {
+        let zones = vec![
+            ZoneRect::new(0.0, 0.0, 0.5, 0.5),
+            ZoneRect::new(0.5, 0.0, 0.5, 0.5),
+            ZoneRect::new(0.0, 0.5, 0.5, 0.5),
+            ZoneRect::new(0.5, 0.5, 0.5, 0.5),
+        ];
+        let vertical = dividers(&zones)
+            .into_iter()
+            .find(|d| d.axis == Axis::Vertical)
+            .unwrap();
+        let merged = merge_at(&zones, vertical).unwrap();
+        assert_eq!(merged.len(), 2, "both rows should merge: {merged:?}");
+        assert!(tiles_completely(&merged));
+    }
+
+    /// Zones that do not line up across the boundary cannot merge into a
+    /// rectangle, so they are left alone rather than overlapped.
+    #[test]
+    fn merging_ragged_zones_is_refused() {
+        let zones = vec![
+            ZoneRect::new(0.0, 0.0, 0.5, 1.0),
+            ZoneRect::new(0.5, 0.0, 0.5, 0.5),
+            ZoneRect::new(0.5, 0.5, 0.5, 0.5),
+        ];
+        // The left zone spans full height; neither right zone matches it.
+        let divider = Divider {
+            axis: Axis::Vertical,
+            position: 0.5,
+        };
+        assert!(merge_at(&zones, divider).is_none());
     }
 
     #[test]
