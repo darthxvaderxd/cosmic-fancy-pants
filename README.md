@@ -89,8 +89,9 @@ Some behaviour is deliberate and would otherwise look like a bug:
 - **App→zone memory is off by default**, and is ignored when the remembered
   layout is no longer the one assigned. Zone 1 of a three-column layout is a
   different region of the screen under a 2×2 grid.
-- **Zone shortcuts other than the editor default to unbound.** The obvious
-  candidates collide with COSMIC's existing window bindings.
+- **Movement shortcuts default to Ctrl+Alt+arrows.** COSMIC binds every arrow
+  shortcut it ships with Super, so Ctrl+Alt is free and nothing is shadowed; a
+  test asserts these never claim Super.
 - **Zone geometry matches `TiledCorners` exactly on even-sized outputs**,
   including odd gap values, so zone- and corner-snapped windows line up. It
   deliberately differs on odd-sized outputs, where upstream's integer

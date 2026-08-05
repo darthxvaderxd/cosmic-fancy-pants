@@ -102,17 +102,20 @@ snaps rather than re-laying out windows already sitting in zones.
 
 ### Keyboard shortcuts
 
-Only `open_editor` is bound by default. The rest are unbound because the
-obvious candidates collide with COSMIC's existing window bindings; set them
-explicitly if you want them.
+Movement uses Ctrl+Alt, which COSMIC does not bind — every arrow shortcut it
+ships uses Super — so nothing is shadowed. The workspace shortcuts are unbound,
+because assignment has editor UI.
 
-| Shortcut | Action |
-| --- | --- |
-| `open_editor` | Launch the editor (default **Super+Shift+`**) |
-| `snap_next` / `snap_prev` | Move the focused window between zones |
-| `grow_span` / `shrink_span` | Extend or contract across adjacent zones |
-| `assign_to_workspace` | Pin the monitor's layout to the active workspace |
-| `clear_workspace` | Drop that assignment, reverting to the monitor default |
+| Shortcut | Default | Action |
+| --- | --- | --- |
+| `open_editor` | **Super+Shift+`** | Launch the editor |
+| `snap_next` / `snap_prev` | **Ctrl+Alt+→ / ←** | Move the focused window between zones |
+| `grow_span` / `shrink_span` | **Ctrl+Alt+↑ / ↓** | Extend or contract across adjacent zones |
+| `assign_to_workspace` | unbound | Pin the monitor's layout to the active workspace |
+| `clear_workspace` | unbound | Drop that assignment, reverting to the monitor default |
+
+Defaults only apply to a config that does not already have the key. An existing
+config keeps whatever it has, including an explicit `None`.
 
 A binding looks like:
 

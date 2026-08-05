@@ -295,13 +295,21 @@ impl Default for ZoneShortcuts {
             shift: true,
             ..Default::default()
         };
+        // Ctrl+Alt is unused by COSMIC's own shortcuts — every arrow binding it
+        // ships involves Super — so these can be bound without taking anything.
+        let ctrl_alt = ZoneModifiers {
+            ctrl: true,
+            alt: true,
+            ..Default::default()
+        };
         Self {
             // Mirrors FancyZones' Win+Shift+` for the editor.
             open_editor: Some(ZoneBinding::new(logo_shift, "grave")),
-            snap_next: None,
-            snap_prev: None,
-            grow_span: None,
-            shrink_span: None,
+            snap_next: Some(ZoneBinding::new(ctrl_alt, "Right")),
+            snap_prev: Some(ZoneBinding::new(ctrl_alt, "Left")),
+            grow_span: Some(ZoneBinding::new(ctrl_alt, "Up")),
+            shrink_span: Some(ZoneBinding::new(ctrl_alt, "Down")),
+            // Assignment has editor UI now, so these stay opt-in.
             assign_to_workspace: None,
             clear_workspace: None,
         }
@@ -794,6 +802,23 @@ mod tests {
         let decoded: ZoneShortcuts = ron::from_str(old).expect("old config should still parse");
         assert!(decoded.assign_to_workspace.is_none());
         assert!(decoded.clear_workspace.is_none());
+    }
+
+    /// The movement shortcuts must not collide with COSMIC's own bindings,
+    /// which all use Super for arrows.
+    #[test]
+    fn movement_shortcuts_are_bound_to_ctrl_alt_arrows() {
+        let s = ZoneShortcuts::default();
+        for binding in [&s.snap_next, &s.snap_prev, &s.grow_span, &s.shrink_span] {
+            let binding = binding.as_ref().expect("should be bound by default");
+            assert!(binding.modifiers.ctrl && binding.modifiers.alt);
+            assert!(
+                !binding.modifiers.logo,
+                "Super is COSMIC's own; taking it would shadow a built-in binding"
+            );
+        }
+        assert_eq!(s.snap_next.as_ref().unwrap().key, "Right");
+        assert_eq!(s.shrink_span.as_ref().unwrap().key, "Down");
     }
 
     #[test]
