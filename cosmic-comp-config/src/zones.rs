@@ -61,14 +61,21 @@ impl ZoneRect {
     }
 
     /// Clamp into the unit square, preserving positive extent where possible.
+    ///
+    /// Non-finite components collapse to zero before clamping. `f64::clamp`
+    /// panics when either bound is NaN, and NaN is precisely the input class
+    /// [`Self::is_valid`] rejects — this is the function whose job is to
+    /// survive pathological input, and a panic here takes the compositor with
+    /// it.
     pub fn clamped(&self) -> Self {
-        let x = self.x.clamp(0.0, 1.0);
-        let y = self.y.clamp(0.0, 1.0);
+        let finite = |v: f64| if v.is_finite() { v } else { 0.0 };
+        let x = finite(self.x).clamp(0.0, 1.0);
+        let y = finite(self.y).clamp(0.0, 1.0);
         Self {
             x,
             y,
-            w: self.w.clamp(0.0, 1.0 - x),
-            h: self.h.clamp(0.0, 1.0 - y),
+            w: finite(self.w).clamp(0.0, 1.0 - x),
+            h: finite(self.h).clamp(0.0, 1.0 - y),
         }
     }
 
@@ -176,6 +183,47 @@ impl ZoneLayout {
         let mut iter = indices.iter().filter_map(|&i| self.zones.get(i));
         let first = *iter.next()?;
         Some(iter.fold(first, |acc, z| acc.union(z)))
+    }
+
+    /// Does this set of zones exactly fill its own bounding box?
+    ///
+    /// Spans are stored as indices but placed as their bounding rectangle, so
+    /// a set that leaves part of that rectangle uncovered puts the window over
+    /// a zone it does not name — and the next resize then works from a
+    /// rectangle the set never described. Overlapping zones fail this too,
+    /// which is the conservative answer for a canvas-style layout.
+    pub fn span_is_exact(&self, indices: &[usize]) -> bool {
+        let mut indices = indices.to_vec();
+        indices.sort_unstable();
+        indices.dedup();
+        let Some(rect) = self.span(&indices) else {
+            return false;
+        };
+        let covered: f64 = indices
+            .iter()
+            .filter_map(|&i| self.zones.get(i))
+            .map(|z| z.area())
+            .sum();
+        (covered - rect.area()).abs() < EPSILON
+    }
+
+    /// Indices of every zone that lies inside `rect`.
+    ///
+    /// Growing a span works by extending its rectangle and then taking
+    /// everything the new rectangle swallows, so the set always names what the
+    /// window will actually cover.
+    pub fn zones_within(&self, rect: ZoneRect) -> Vec<usize> {
+        self.zones
+            .iter()
+            .enumerate()
+            .filter(|(_, z)| {
+                z.x >= rect.x - EPSILON
+                    && z.y >= rect.y - EPSILON
+                    && z.right() <= rect.right() + EPSILON
+                    && z.bottom() <= rect.bottom() + EPSILON
+            })
+            .map(|(i, _)| i)
+            .collect()
     }
 
     /// Resolve what a drag at this point should snap to.
@@ -323,6 +371,29 @@ pub struct AppZoneMemory {
     pub zones: Vec<usize>,
 }
 
+/// App id -> last known zone, stored under its own cosmic-config key.
+///
+/// Deliberately *not* part of [`ZonesConfig`]. This is written by the
+/// compositor on every zone drop-snap, while `ZonesConfig` is written by the
+/// editor on save; sharing one key means each write rewrites the other's data
+/// from a stale snapshot, so a snap concurrent with a save silently loses one
+/// of them. It is also the lowest-value data here paired with the highest —
+/// user-authored layouts — so separating them shrinks the frequent write too.
+pub type AppZoneMemories = HashMap<String, AppZoneMemory>;
+
+/// Reader for the pre-split `zones` key, used once at startup to move app
+/// memory across without losing it.
+///
+/// A partial view rather than a field on [`ZonesConfig`]: serde ignores the
+/// rest of the blob, so this reads the one legacy field without carrying it
+/// around in the live config type. Delete this once no configs predate the
+/// split.
+#[derive(Debug, Default, Deserialize)]
+pub struct LegacyZones {
+    #[serde(default)]
+    pub app_memory: AppZoneMemories,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ZonesConfig {
     pub enabled: bool,
@@ -351,8 +422,6 @@ pub struct ZonesConfig {
     pub per_output: HashMap<OutputMatch, String>,
     /// Workspace id -> layout id. Takes precedence over `per_output`.
     pub per_workspace: HashMap<String, String>,
-    /// App id -> last known zone.
-    pub app_memory: HashMap<String, AppZoneMemory>,
     pub shortcuts: ZoneShortcuts,
 }
 
@@ -370,7 +439,6 @@ impl Default for ZonesConfig {
             layouts: default_layouts(),
             per_output: HashMap::new(),
             per_workspace: HashMap::new(),
-            app_memory: HashMap::new(),
             shortcuts: ZoneShortcuts::default(),
         }
     }
@@ -440,6 +508,25 @@ impl ZonesConfig {
 }
 
 pub const DEFAULT_LAYOUT_ID: &str = "columns-3";
+
+/// Ids of the built-in templates.
+///
+/// Kept alongside [`default_layouts`] so "is this a template?" — which the
+/// editor asks on every edit, to decide whether to fork before writing — does
+/// not have to build all six layouts, Strings and Vecs included, to answer.
+/// `default_layout_ids_match_the_templates` keeps the two in step.
+pub const DEFAULT_LAYOUT_IDS: [&str; 6] = [
+    "columns-2",
+    "columns-3",
+    "rows-2",
+    "grid-2x2",
+    "priority-grid",
+    "main-stack",
+];
+
+pub fn is_default_layout_id(id: &str) -> bool {
+    DEFAULT_LAYOUT_IDS.contains(&id)
+}
 
 /// Built-in templates, mirroring the FancyZones starter set.
 pub fn default_layouts() -> HashMap<String, ZoneLayout> {
@@ -684,6 +771,28 @@ mod tests {
         );
     }
 
+    /// Regression: `f64::clamp` panics if either bound is NaN, so a NaN `x`
+    /// used to blow up on `w.clamp(0.0, 1.0 - x)`. `clamped` is the last line
+    /// of defence in front of `zone_relative_geometry`, which runs on every
+    /// zone of every layout — a panic here takes the compositor down.
+    #[test]
+    fn clamped_survives_non_finite_input() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for rect in [
+                ZoneRect::new(bad, 0.0, 0.5, 0.5),
+                ZoneRect::new(0.0, bad, 0.5, 0.5),
+                ZoneRect::new(0.0, 0.0, bad, 0.5),
+                ZoneRect::new(0.0, 0.0, 0.5, bad),
+            ] {
+                let clamped = rect.clamped();
+                for v in [clamped.x, clamped.y, clamped.w, clamped.h] {
+                    assert!(v.is_finite(), "{rect:?} -> {clamped:?}");
+                    assert!((0.0..=1.0).contains(&v), "{rect:?} -> {clamped:?}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn edge_threshold_scales_with_the_smaller_axis() {
         let cfg = ZonesConfig::default();
@@ -787,6 +896,18 @@ mod tests {
         assert!(default_layouts().contains_key(DEFAULT_LAYOUT_ID));
     }
 
+    /// `is_default_layout_id` answers from a const list rather than building
+    /// the templates, so the list has to be kept honest here.
+    #[test]
+    fn default_layout_ids_match_the_templates() {
+        let built: std::collections::BTreeSet<String> = default_layouts().into_keys().collect();
+        let listed: std::collections::BTreeSet<String> =
+            DEFAULT_LAYOUT_IDS.iter().map(|id| id.to_string()).collect();
+        assert_eq!(built, listed);
+        assert!(is_default_layout_id(DEFAULT_LAYOUT_ID));
+        assert!(!is_default_layout_id("custom-1"));
+    }
+
     /// Configs written before the workspace-assignment shortcuts existed must
     /// still load. Without `serde(default)` on the new fields, every existing
     /// user config would fail to parse and silently reset to defaults.
@@ -840,8 +961,10 @@ mod tests {
     /// Configs written before the gap setting existed must still load.
     #[test]
     fn a_config_without_a_gap_still_loads() {
-        let mut cfg = ZonesConfig::default();
-        cfg.gap = Some(12);
+        let cfg = ZonesConfig {
+            gap: Some(12),
+            ..Default::default()
+        };
         let encoded = ron::ser::to_string(&cfg).unwrap();
         let stripped = encoded.replace("gap:Some(12),", "");
         let decoded: ZonesConfig = ron::from_str(&stripped).expect("should still parse");
@@ -858,7 +981,17 @@ mod tests {
             },
             "priority-grid".into(),
         );
-        cfg.app_memory.insert(
+
+        let encoded = ron::ser::to_string(&cfg).expect("serialize");
+        let decoded: ZonesConfig = ron::from_str(&encoded).expect("deserialize");
+        assert_eq!(cfg, decoded);
+    }
+
+    /// App memory lives under its own config key, so it round-trips on its own.
+    #[test]
+    fn app_memory_survives_a_ron_round_trip() {
+        let mut memories = AppZoneMemories::new();
+        memories.insert(
             "com.example.App".into(),
             AppZoneMemory {
                 layout: "priority-grid".into(),
@@ -866,8 +999,47 @@ mod tests {
             },
         );
 
+        let encoded = ron::ser::to_string(&memories).expect("serialize");
+        let decoded: AppZoneMemories = ron::from_str(&encoded).expect("deserialize");
+        assert_eq!(memories, decoded);
+    }
+
+    /// A config written while `app_memory` was still part of the zones blob
+    /// must still load — serde ignores the leftover field rather than failing,
+    /// which would otherwise reset every user's layouts to defaults.
+    #[test]
+    fn a_config_with_the_old_app_memory_field_still_loads() {
+        let cfg = ZonesConfig::default();
         let encoded = ron::ser::to_string(&cfg).expect("serialize");
-        let decoded: ZonesConfig = ron::from_str(&encoded).expect("deserialize");
-        assert_eq!(cfg, decoded);
+        let with_old_field = encoded.replacen(
+            "enabled:",
+            "app_memory:{\"com.example.App\":(layout:\"columns-3\",zones:[1])},enabled:",
+            1,
+        );
+        let decoded: ZonesConfig = ron::from_str(&with_old_field).expect("should still parse");
+        assert_eq!(decoded, cfg);
+    }
+
+    /// Ignoring the old field is only safe because something rescues it first.
+    /// `LegacyZones` has to find `app_memory` in a pre-split config while
+    /// ignoring every other field in the blob, and find nothing in a
+    /// post-split one so the migration does not re-run.
+    #[test]
+    fn the_legacy_reader_finds_app_memory_to_migrate() {
+        let encoded = ron::ser::to_string(&ZonesConfig::default()).expect("serialize");
+        let pre_split = encoded.replacen(
+            "enabled:",
+            "app_memory:{\"com.example.App\":(layout:\"columns-3\",zones:[1])},enabled:",
+            1,
+        );
+
+        let legacy: LegacyZones = ron::from_str(&pre_split).expect("should parse");
+        assert_eq!(legacy.app_memory["com.example.App"].zones, vec![1]);
+
+        let current: LegacyZones = ron::from_str(&encoded).expect("should parse");
+        assert!(
+            current.app_memory.is_empty(),
+            "a post-split config has nothing to migrate"
+        );
     }
 }

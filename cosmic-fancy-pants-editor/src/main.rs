@@ -21,15 +21,24 @@ fn main() -> cosmic::iced::Result {
         )
         .init();
 
-    // Workspace ids are compositor-internal, so the compositor passes the
-    // active one when it launches us. Absent — launched from the app library —
-    // only per-monitor assignment is offered.
-    let workspace = std::env::args()
-        .skip_while(|arg| arg != "--workspace")
-        .nth(1)
-        .filter(|id| !id.is_empty());
+    // Both of these are compositor knowledge with no Wayland equivalent:
+    // workspace ids are internal, and nothing tells a client which output the
+    // user was looking at. Absent — launched from the app library — the editor
+    // offers per-monitor assignment only.
+    let launch = state::Launch {
+        workspace: flag("--workspace"),
+        output: flag("--output"),
+    };
 
     // No initial window: every surface this app creates is a layer shell
     // overlay bound to a specific output.
-    cosmic::app::run::<state::Editor>(Settings::default().no_main_window(true), workspace)
+    cosmic::app::run::<state::Editor>(Settings::default().no_main_window(true), launch)
+}
+
+/// Value following `name` on the command line, if it is there and non-empty.
+fn flag(name: &str) -> Option<String> {
+    std::env::args()
+        .skip_while(|arg| arg != name)
+        .nth(1)
+        .filter(|value| !value.is_empty())
 }

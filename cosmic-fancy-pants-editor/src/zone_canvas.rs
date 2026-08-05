@@ -312,16 +312,56 @@ impl canvas::Program<Message, Theme, Renderer> for ZoneCanvas<'_> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
+        // Modifiers and the end of a drag are handled before any bounds check.
+        // Requiring the cursor to be inside the canvas first — as this used to
+        // — dropped the release when the button came up over the toolbar: the
+        // drag never committed *and* `dragging` stayed `Some`, so the next
+        // motion back inside the canvas silently resumed dragging with no
+        // button held.
+        if let Event::Keyboard(cosmic::iced::keyboard::Event::ModifiersChanged(modifiers)) = event {
+            state.modifiers = *modifiers;
+            return None;
+        }
+
+        if state.dragging.is_some() {
+            match event {
+                Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                    // Absolute, not bounds-relative: a drag that wanders over
+                    // the toolbar keeps tracking (clamped by `move_divider`)
+                    // rather than freezing at the canvas edge.
+                    let absolute = cursor.position()?;
+                    let drag = state.dragging.as_mut()?;
+                    let to = cursor_fraction(drag.divider, bounds, absolute);
+                    // Preview locally and redraw; publishing per motion event
+                    // would rebuild the whole widget tree and re-render a
+                    // fullscreen canvas hundreds of times per drag, which is
+                    // what made dragging feel sluggish.
+                    if move_divider(&drag.origin, drag.divider, to).is_some() {
+                        drag.current = to.clamp(MIN_FRACTION, 1.0 - MIN_FRACTION);
+                    }
+                    return Some(canvas::Action::request_redraw());
+                }
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                    // Commit once, on release, from the position tracked during
+                    // the drag — which is why this needs no cursor position and
+                    // can therefore accept a release anywhere on screen.
+                    let drag = state.dragging.take()?;
+                    let updated = move_divider(&drag.origin, drag.divider, drag.current)?;
+                    return Some(canvas::Action::publish(Message::ZonesEdited(
+                        self.surface_id,
+                        updated,
+                    )));
+                }
+                _ => return None,
+            }
+        }
+
         let position = cursor.position_in(bounds)?;
         // `position_in` is bounds-relative; boundary maths works in the same
         // space as `draw`, which uses absolute bounds.
         let absolute = Point::new(bounds.x + position.x, bounds.y + position.y);
 
         match event {
-            Event::Keyboard(cosmic::iced::keyboard::Event::ModifiersChanged(modifiers)) => {
-                state.modifiers = *modifiers;
-                None
-            }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 // On a boundary: drag it. Anywhere else: split the zone there.
                 if let Some(divider) = divider_at(self.zones, bounds, absolute) {
@@ -368,27 +408,6 @@ impl canvas::Program<Message, Theme, Renderer> for ZoneCanvas<'_> {
                     updated,
                 )))
             }
-            Event::Mouse(mouse::Event::CursorMoved { .. }) => {
-                let drag = state.dragging.as_mut()?;
-                let to = cursor_fraction(drag.divider, bounds, absolute);
-                // Preview locally and redraw; publishing per motion event would
-                // rebuild the whole widget tree and re-render a fullscreen
-                // canvas hundreds of times per drag, which is what made
-                // dragging feel sluggish.
-                if move_divider(&drag.origin, drag.divider, to).is_some() {
-                    drag.current = to.clamp(MIN_FRACTION, 1.0 - MIN_FRACTION);
-                }
-                Some(canvas::Action::request_redraw())
-            }
-            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                // Commit once, on release.
-                let drag = state.dragging.take()?;
-                let updated = move_divider(&drag.origin, drag.divider, drag.current)?;
-                Some(canvas::Action::publish(Message::ZonesEdited(
-                    self.surface_id,
-                    updated,
-                )))
-            }
             _ => None,
         }
     }
@@ -415,18 +434,19 @@ impl canvas::Program<Message, Theme, Renderer> for ZoneCanvas<'_> {
         // cost is a single line rather than the whole scene.
         let zones: &[ZoneRect] = self.zones;
 
-        let hovered = cursor
-            .position_in(bounds)
-            .map(|p| Point::new(bounds.x + p.x, bounds.y + p.y))
-            .and_then(|p| divider_at(zones, bounds, p));
-        let active = state
-            .dragging
-            .as_ref()
-            .map(|drag| Divider {
+        // The hover search is skipped mid-drag: `divider_at` walks `dividers`,
+        // which is O(n²) with an allocation, and `draw` runs every frame of the
+        // drag — the one place on this widget's hot path where it matters.
+        let active = match state.dragging.as_ref() {
+            Some(drag) => Some(Divider {
                 position: drag.current,
                 ..drag.divider
-            })
-            .or(hovered);
+            }),
+            None => cursor
+                .position_in(bounds)
+                .map(|p| Point::new(bounds.x + p.x, bounds.y + p.y))
+                .and_then(|p| divider_at(zones, bounds, p)),
+        };
 
         for (index, zone) in zones.iter().enumerate() {
             // Frame coordinates are local to the canvas, so draw at the origin.
@@ -466,7 +486,7 @@ impl canvas::Program<Message, Theme, Renderer> for ZoneCanvas<'_> {
                     color: accent,
                     size: 28.0.into(),
                     align_x: cosmic::iced::alignment::Horizontal::Center.into(),
-                    align_y: cosmic::iced::alignment::Vertical::Center.into(),
+                    align_y: cosmic::iced::alignment::Vertical::Center,
                     ..Text::default()
                 });
             }

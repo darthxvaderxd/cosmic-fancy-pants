@@ -316,6 +316,9 @@ impl XdgShellHandler for State {
         }
     }
 
+    // Inherited from upstream cosmic-comp, not this fork. Allowed rather than
+    // fixed so the file stays rebase-clean; drop it if upstream tidies it up.
+    #[allow(clippy::collapsible_if)]
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         for (popup, _) in smithay::desktop::PopupManager::popups_for_surface(surface.wl_surface()) {
             if let smithay::desktop::PopupKind::Xdg(ref xdg_popup) = popup {

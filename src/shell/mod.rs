@@ -25,7 +25,7 @@ use crate::{
 use cosmic_comp_config::{
     AppearanceConfig, TileBehavior, ZoomConfig, ZoomMovement,
     workspace::{PinnedWorkspace, WorkspaceLayout, WorkspaceMode},
-    zones::ZonesConfig,
+    zones::{AppZoneMemories, ZonesConfig},
 };
 use cosmic_config::ConfigSet;
 use cosmic_protocols::workspace::v2::server::zcosmic_workspace_handle_v2::TilingState;
@@ -297,9 +297,12 @@ pub struct Shell {
     resize_indicator: Option<ResizeIndicator>,
     zoom_state: Option<ZoomState>,
     appearance_conf: AppearanceConfig,
-    /// Cached zone configuration, so window mapping can consult app→zone
-    /// memory without threading `Config` through the shell.
+    /// Cached zone configuration, so window mapping can resolve layouts
+    /// without threading `Config` through the shell.
     zones_conf: ZonesConfig,
+    /// Cached app→zone memory. Separate from `zones_conf` because it lives
+    /// under its own config key; see [`AppZoneMemories`].
+    zone_app_memory: AppZoneMemories,
     tiling_exceptions: TilingExceptions,
 
     #[cfg(feature = "debug")]
@@ -1579,7 +1582,15 @@ impl Common {
         let shell_ref = &mut *shell;
         shell_ref.active_hint = self.config.cosmic_conf.active_hint;
         shell_ref.appearance_conf = self.config.cosmic_conf.appearance_settings;
-        shell_ref.zones_conf = self.config.cosmic_conf.zones.clone();
+        // Compared before cloning: `update_config` runs on every scroll-zoom
+        // change, not just on config-file changes, and `ZonesConfig` carries
+        // every layout plus the whole app-memory map.
+        if shell_ref.zones_conf != self.config.cosmic_conf.zones {
+            shell_ref.zones_conf = self.config.cosmic_conf.zones.clone();
+        }
+        if shell_ref.zone_app_memory != self.config.cosmic_conf.zone_app_memory {
+            shell_ref.zone_app_memory = self.config.cosmic_conf.zone_app_memory.clone();
+        }
         if let Some(zoom_state) = shell_ref.zoom_state.as_mut() {
             zoom_state.increment = self.config.cosmic_conf.accessibility_zoom.increment;
             zoom_state.movement = self.config.cosmic_conf.accessibility_zoom.view_moves;
@@ -1718,6 +1729,7 @@ impl Shell {
             resize_indicator: None,
             appearance_conf: config.cosmic_conf.appearance_settings,
             zones_conf: config.cosmic_conf.zones.clone(),
+            zone_app_memory: config.cosmic_conf.zone_app_memory.clone(),
             zoom_state: None,
             tiling_exceptions,
 
@@ -2430,6 +2442,12 @@ impl Shell {
         self.zones_conf = config;
     }
 
+    /// Replace the cached app→zone memory. As [`Self::set_zones_config`], but
+    /// for the key the compositor itself writes on every drop-snap.
+    pub fn set_zone_app_memory(&mut self, memories: AppZoneMemories) {
+        self.zone_app_memory = memories;
+    }
+
     pub fn appearance_config(&self) -> AppearanceConfig {
         self.appearance_conf
     }
@@ -2951,6 +2969,7 @@ impl Shell {
         // Resolved before mapping so the borrow of `workspace` stays simple.
         let remembered_zone = zones::remembered_zone(
             &self.zones_conf,
+            &self.zone_app_memory,
             &window.app_id(),
             &output,
             workspace.id.as_deref(),
