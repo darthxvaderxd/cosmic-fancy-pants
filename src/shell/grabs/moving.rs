@@ -6,6 +6,7 @@ use crate::{
     },
     shell::{
         CosmicMapped, CosmicSurface, Direction, ManagedLayer,
+        element::zone_number::ZoneNumber,
         element::{CosmicMappedRenderElement, stack_hover::StackHover},
         focus::target::{KeyboardFocusTarget, PointerFocusTarget},
         layout::floating::{FloatingTiled, TiledCorners},
@@ -82,6 +83,9 @@ pub struct ZoneDragState {
     target: Option<ZoneHit>,
     /// Fill opacity for non-targeted zones, from `ZonesConfig::inactive_opacity`.
     inactive_alpha: f32,
+    /// One badge per zone, built once when the drag arms rather than per frame.
+    /// Empty when `show_zone_numbers` is off.
+    numbers: Vec<ZoneNumber>,
 }
 
 impl MoveGrabState {
@@ -290,6 +294,23 @@ impl MoveGrabState {
                 theme.radius_s()[2] as u8,
                 theme.radius_s()[3] as u8,
             ];
+
+            // Centre a number badge in each zone, so the keyboard shortcuts
+            // have something to refer to.
+            for (badge, geo) in zones.numbers.iter().zip(zones.context.geometries()) {
+                let size = badge.size();
+                let centre = Point::<i32, Logical>::from((
+                    geo.loc.x + (geo.size.w - size.w) / 2,
+                    geo.loc.y + (geo.size.h - size.h) / 2,
+                ));
+                badge.push_render_elements(
+                    renderer,
+                    centre.to_physical_precise_round(output_scale),
+                    output_scale,
+                    1.0,
+                    &mut |elem| push(elem.into()),
+                );
+            }
 
             // Every zone, dimmed, so the whole layout is legible the moment
             // the modifier goes down.
@@ -591,12 +612,31 @@ impl MoveGrab {
                             workspace_id.as_deref(),
                             gaps,
                         )
-                        .map(|context| ZoneDragState {
-                            output: current_output.clone(),
-                            context,
-                            target: None,
-                            inactive_alpha: (zones_config.inactive_opacity.min(100) as f32 / 100.0)
-                                * SNAP_OVERLAY_ALPHA,
+                        .map(|context| {
+                            let numbers = if zones_config.show_zone_numbers {
+                                (1..=context.len())
+                                    .map(|n| {
+                                        let number = ZoneNumber::new(
+                                            state.common.event_loop_handle.clone(),
+                                            n,
+                                            state.common.theme.clone(),
+                                        );
+                                        number.output_enter(&current_output);
+                                        number
+                                    })
+                                    .collect()
+                            } else {
+                                Vec::new()
+                            };
+                            ZoneDragState {
+                                output: current_output.clone(),
+                                context,
+                                target: None,
+                                inactive_alpha: (zones_config.inactive_opacity.min(100) as f32
+                                    / 100.0)
+                                    * SNAP_OVERLAY_ALPHA,
+                                numbers,
+                            }
                         });
                     }
 

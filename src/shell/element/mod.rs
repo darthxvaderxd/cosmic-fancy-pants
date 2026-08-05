@@ -58,6 +58,7 @@ pub use self::window::CosmicWindow;
 pub mod resize_indicator;
 pub mod stack_hover;
 pub mod swap_indicator;
+pub mod zone_number;
 
 #[cfg(feature = "debug")]
 use egui_plot::{Corner, Legend, Plot, PlotPoints, Polygon};
