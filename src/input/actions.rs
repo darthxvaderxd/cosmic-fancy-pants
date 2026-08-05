@@ -14,9 +14,6 @@ use crate::{
     },
 };
 use cosmic_comp_config::{TileBehavior, workspace::WorkspaceLayout};
-
-/// Binary launched by the open-editor zone shortcut.
-const ZONE_EDITOR_COMMAND: &str = "cosmic-fancy-pants-editor";
 use cosmic_config::ConfigSet;
 use cosmic_settings_config::shortcuts;
 use cosmic_settings_config::shortcuts::action::{Direction, FocusDirection};
@@ -31,6 +28,9 @@ use tracing::{error, warn};
 use std::{os::unix::process::CommandExt, thread};
 
 use super::gestures;
+
+/// Binary launched by the open-editor zone shortcut.
+const ZONE_EDITOR_COMMAND: &str = "cosmic-fancy-pants-editor";
 
 fn propagate_by_default(action: &shortcuts::Action) -> bool {
     matches!(
@@ -1051,9 +1051,16 @@ impl State {
 
     /// Move the focused window between zones, or open the editor.
     fn handle_zone_action(&mut self, action: ZoneAction, seat: &Seat<State>) {
-        if action == ZoneAction::OpenEditor {
-            self.spawn_command(ZONE_EDITOR_COMMAND.into());
-            return;
+        match action {
+            ZoneAction::OpenEditor => {
+                self.spawn_command(ZONE_EDITOR_COMMAND.into());
+                return;
+            }
+            ZoneAction::AssignToWorkspace | ZoneAction::ClearWorkspace => {
+                self.assign_workspace_layout(seat, action == ZoneAction::AssignToWorkspace);
+                return;
+            }
+            _ => {}
         }
 
         let Some(KeyboardFocusTarget::Element(window)) =
@@ -1104,7 +1111,9 @@ impl State {
                     None => return,
                 }
             }
-            ZoneAction::OpenEditor => return,
+            ZoneAction::OpenEditor | ZoneAction::AssignToWorkspace | ZoneAction::ClearWorkspace => {
+                return;
+            }
         };
 
         let Some(hit) = context.hit_for(&target) else {
@@ -1121,6 +1130,74 @@ impl State {
                 rect: hit.rect,
             },
         );
+    }
+
+    /// Pin the current monitor layout to the active workspace, or clear it.
+    ///
+    /// Non-pinned workspaces have no id (`Workspace.id` is only populated when
+    /// a workspace is pinned), so one is assigned lazily on first use and
+    /// published over the workspace protocol the same way pinning does.
+    fn assign_workspace_layout(&mut self, seat: &Seat<State>, assign: bool) {
+        let output = seat.focused_or_active_output();
+
+        let layout_id = {
+            let shell = self.common.shell.read();
+            let Some(workspace) = shell.active_space(&output) else {
+                return;
+            };
+            let zones = &self.common.config.cosmic_conf.zones;
+            let output_match = cosmic_comp_config::workspace::OutputMatch {
+                name: output.name(),
+                edid: output.edid().cloned(),
+            };
+            // Assigning pins whatever the monitor currently resolves to, so the
+            // workspace keeps that layout even if the monitor default changes.
+            match workspace
+                .id
+                .as_ref()
+                .and_then(|id| zones.per_workspace.get(id))
+                .or_else(|| zones.per_output.get(&output_match))
+            {
+                Some(id) => id.clone(),
+                None => return,
+            }
+        };
+
+        let workspace_id = {
+            let mut shell = self.common.shell.write();
+            let mut update = self.common.workspace_state.update();
+            let Some(workspace) = shell.active_space_mut(&output) else {
+                return;
+            };
+            match workspace.id.clone() {
+                Some(id) => id,
+                None if assign => {
+                    let id = crate::shell::random_workspace_id();
+                    let _ = update.set_id(&workspace.handle, &id);
+                    workspace.id = Some(id.clone());
+                    id
+                }
+                // Nothing to clear on a workspace that never had an assignment.
+                None => return,
+            }
+        };
+
+        let zones = &mut self.common.config.cosmic_conf.zones;
+        if assign {
+            // Re-assigning the same layout would rewrite config for nothing.
+            if zones.per_workspace.get(&workspace_id) == Some(&layout_id) {
+                return;
+            }
+            zones.per_workspace.insert(workspace_id, layout_id);
+        } else if zones.per_workspace.remove(&workspace_id).is_none() {
+            return;
+        }
+
+        let snapshot = zones.clone();
+        if let Err(err) = self.common.config.cosmic_helper.set("zones", &snapshot) {
+            tracing::warn!(?err, "failed to persist workspace zone assignment");
+        }
+        self.common.shell.write().set_zones_config(snapshot);
     }
 
     pub fn spawn_command(&mut self, command: String) {

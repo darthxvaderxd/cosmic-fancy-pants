@@ -415,6 +415,11 @@ pub fn match_shortcut(
         (&shortcuts.snap_prev, ZoneAction::CyclePrev),
         (&shortcuts.grow_span, ZoneAction::GrowSpan),
         (&shortcuts.shrink_span, ZoneAction::ShrinkSpan),
+        (
+            &shortcuts.assign_to_workspace,
+            ZoneAction::AssignToWorkspace,
+        ),
+        (&shortcuts.clear_workspace, ZoneAction::ClearWorkspace),
     ];
 
     for (binding, action) in candidates {

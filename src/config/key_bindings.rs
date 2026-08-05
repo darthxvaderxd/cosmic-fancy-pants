@@ -28,6 +28,10 @@ pub enum ZoneAction {
     ShrinkSpan,
     /// Launch the zone editor.
     OpenEditor,
+    /// Pin the current monitor layout to the active workspace.
+    AssignToWorkspace,
+    /// Drop the active workspace's assignment.
+    ClearWorkspace,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

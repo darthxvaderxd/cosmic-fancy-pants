@@ -279,6 +279,13 @@ pub struct ZoneShortcuts {
     pub snap_prev: Option<ZoneBinding>,
     pub grow_span: Option<ZoneBinding>,
     pub shrink_span: Option<ZoneBinding>,
+    /// Pin the current monitor layout to the active workspace.
+    // `serde(default)` so configs written before these existed still load.
+    #[serde(default)]
+    pub assign_to_workspace: Option<ZoneBinding>,
+    /// Drop the active workspace's assignment, falling back to the monitor's.
+    #[serde(default)]
+    pub clear_workspace: Option<ZoneBinding>,
 }
 
 impl Default for ZoneShortcuts {
@@ -295,6 +302,8 @@ impl Default for ZoneShortcuts {
             snap_prev: None,
             grow_span: None,
             shrink_span: None,
+            assign_to_workspace: None,
+            clear_workspace: None,
         }
     }
 }
@@ -674,6 +683,23 @@ mod tests {
     #[test]
     fn default_layout_id_exists() {
         assert!(default_layouts().contains_key(DEFAULT_LAYOUT_ID));
+    }
+
+    /// Configs written before the workspace-assignment shortcuts existed must
+    /// still load. Without `serde(default)` on the new fields, every existing
+    /// user config would fail to parse and silently reset to defaults.
+    #[test]
+    fn shortcuts_written_before_new_fields_still_load() {
+        let old = r#"(
+            open_editor: None,
+            snap_next: None,
+            snap_prev: None,
+            grow_span: None,
+            shrink_span: None,
+        )"#;
+        let decoded: ZoneShortcuts = ron::from_str(old).expect("old config should still parse");
+        assert!(decoded.assign_to_workspace.is_none());
+        assert!(decoded.clear_workspace.is_none());
     }
 
     #[test]
