@@ -130,7 +130,7 @@ snap_next: Some((
 
 ## Known gaps
 
-- Workspace layouts are assigned by shortcut; the editor has no UI for it yet.
-- Zone numbers are drawn in the editor but not in the drag overlay.
 - Changing `gap` does not re-layout windows already snapped; they keep the
   spacing they were snapped with until moved again.
+- Clearing a workspace assignment is shortcut-only; the editor can set one but
+  not remove it.

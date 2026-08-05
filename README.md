@@ -40,8 +40,13 @@ of eight fixed `TiledCorners` positions. That became:
 
 ```rust
 pub enum FloatingTiled {
-    Corner(TiledCorners),                                        // half and quarter snapping
-    Zone { layout: String, zones: Vec<usize>, rect: ZoneRect },  // user-defined
+    Corner(TiledCorners),  // half and quarter snapping
+    Zone {                 // user-defined
+        layout: String,
+        zones: Vec<usize>,
+        rect: ZoneRect,
+        gap: Option<u32>,
+    },
 }
 ```
 
@@ -56,6 +61,7 @@ cross-workspace moves — handles zones without knowing they exist.
 | --- | --- |
 | `cosmic-comp-config/src/zones.rs` | Layout model and pure fractional geometry, shared with the editor |
 | `src/shell/zones/mod.rs` | Bridge from that model to compositor state: layout resolution, pixel conversion, hit-testing |
+| `src/shell/element/zone_number.rs` | The number badge drawn on each zone during a drag |
 | `cosmic-fancy-pants-editor/` | The editor, its own crate and workspace |
 
 ### Modified upstream files
@@ -142,11 +148,12 @@ COSMIC_BACKEND=winit cargo run
 
 ## Known gaps
 
-- Workspace layouts are assigned by keyboard shortcut; the editor has no UI for
-  it. The `ext-workspace` protocol does expose the ids this would need.
-- Zone numbers are drawn in the editor but not in the drag overlay.
 - Changing the gap does not re-layout windows already snapped, since each snap
   records the gap it was made with.
+- Clearing a workspace assignment is shortcut-only; the editor can set one but
+  not remove it.
+- Multi-monitor is implemented but has never been exercised on hardware with
+  more than one display.
 
 ## License
 
