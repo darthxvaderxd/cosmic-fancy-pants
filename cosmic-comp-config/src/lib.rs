@@ -10,6 +10,7 @@ pub mod input;
 #[cfg(feature = "output")]
 pub mod output;
 pub mod workspace;
+pub mod zones;
 
 #[derive(Debug, Deserialize, Serialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EdidProduct {
@@ -102,6 +103,8 @@ pub struct CosmicCompConfig {
     /// Hide the cursor after this many seconds of pointer inactivity (None disables)
     pub cursor_hide_timeout: Option<u32>,
     pub activation_policy: ActivationPolicy,
+    /// FancyZones-style user-defined snap zones
+    pub zones: zones::ZonesConfig,
 }
 
 impl Default for CosmicCompConfig {
@@ -140,6 +143,7 @@ impl Default for CosmicCompConfig {
             appearance_settings: AppearanceConfig::default(),
             cursor_hide_timeout: None,
             activation_policy: ActivationPolicy::default(),
+            zones: zones::ZonesConfig::default(),
         }
     }
 }

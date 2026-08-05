@@ -52,7 +52,8 @@ pub enum Action {
     OpenApplications,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// `Hash` so `OutputMatch` can key the per-monitor zone layout map.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OutputMatch {
     pub name: String,
     pub edid: Option<EdidProduct>,
