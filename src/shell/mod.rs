@@ -25,6 +25,7 @@ use crate::{
 use cosmic_comp_config::{
     AppearanceConfig, TileBehavior, ZoomConfig, ZoomMovement,
     workspace::{PinnedWorkspace, WorkspaceLayout, WorkspaceMode},
+    zones::ZonesConfig,
 };
 use cosmic_config::ConfigSet;
 use cosmic_protocols::workspace::v2::server::zcosmic_workspace_handle_v2::TilingState;
@@ -296,6 +297,9 @@ pub struct Shell {
     resize_indicator: Option<ResizeIndicator>,
     zoom_state: Option<ZoomState>,
     appearance_conf: AppearanceConfig,
+    /// Cached zone configuration, so window mapping can consult app→zone
+    /// memory without threading `Config` through the shell.
+    zones_conf: ZonesConfig,
     tiling_exceptions: TilingExceptions,
 
     #[cfg(feature = "debug")]
@@ -1575,6 +1579,7 @@ impl Common {
         let shell_ref = &mut *shell;
         shell_ref.active_hint = self.config.cosmic_conf.active_hint;
         shell_ref.appearance_conf = self.config.cosmic_conf.appearance_settings;
+        shell_ref.zones_conf = self.config.cosmic_conf.zones.clone();
         if let Some(zoom_state) = shell_ref.zoom_state.as_mut() {
             zoom_state.increment = self.config.cosmic_conf.accessibility_zoom.increment;
             zoom_state.movement = self.config.cosmic_conf.accessibility_zoom.view_moves;
@@ -1712,6 +1717,7 @@ impl Shell {
             resize_state: None,
             resize_indicator: None,
             appearance_conf: config.cosmic_conf.appearance_settings,
+            zones_conf: config.cosmic_conf.zones.clone(),
             zoom_state: None,
             tiling_exceptions,
 
@@ -2416,6 +2422,14 @@ impl Shell {
         }
     }
 
+    /// Replace the cached zone configuration.
+    ///
+    /// Used when the compositor writes config itself, so the change applies
+    /// immediately rather than on the next config-watch tick.
+    pub fn set_zones_config(&mut self, config: ZonesConfig) {
+        self.zones_conf = config;
+    }
+
     pub fn appearance_config(&self) -> AppearanceConfig {
         self.appearance_conf
     }
@@ -2934,9 +2948,22 @@ impl Shell {
             mapped.set_debug(self.debug_active);
         }
 
+        // Resolved before mapping so the borrow of `workspace` stays simple.
+        let remembered_zone = zones::remembered_zone(
+            &self.zones_conf,
+            &window.app_id(),
+            &output,
+            workspace.id.as_deref(),
+        );
+
         let workspace_empty = workspace.mapped().next().is_none();
         if is_dialog || floating_exception || !workspace.tiling_enabled {
             workspace.floating_layer.map(mapped.clone(), None);
+            // Place the window where this app was last snapped, if that is
+            // enabled and the remembered layout is still the active one.
+            if let Some(snapped) = remembered_zone {
+                workspace.floating_layer.snap_to(&mapped, &snapped);
+            }
         } else {
             for mapped in workspace
                 .mapped()

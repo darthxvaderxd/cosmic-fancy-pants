@@ -53,7 +53,7 @@ use cosmic_comp_config::{
     },
     workspace::WorkspaceConfig,
 };
-pub use key_bindings::{Action, PrivateAction};
+pub use key_bindings::{Action, PrivateAction, ZoneAction};
 use types::WlXkbConfig;
 
 #[derive(Debug)]

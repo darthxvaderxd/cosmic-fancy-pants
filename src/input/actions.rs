@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{
-    config::{Action, PrivateAction},
+    config::{Action, PrivateAction, ZoneAction},
     shell::{
         FocusResult, InvalidWorkspaceIndex, MoveResult, SeatExt, Trigger, WorkspaceDelta,
         focus::{FocusTarget, target::KeyboardFocusTarget},
-        layout::tiling::SwapWindowGrab,
+        layout::{floating::FloatingTiled, tiling::SwapWindowGrab},
+        zones,
     },
     utils::prelude::*,
     wayland::{
@@ -13,6 +14,9 @@ use crate::{
     },
 };
 use cosmic_comp_config::{TileBehavior, workspace::WorkspaceLayout};
+
+/// Binary launched by the open-editor zone shortcut.
+const ZONE_EDITOR_COMMAND: &str = "cosmic-fancy-pants-editor";
 use cosmic_config::ConfigSet;
 use cosmic_settings_config::shortcuts;
 use cosmic_settings_config::shortcuts::action::{Direction, FocusDirection};
@@ -90,6 +94,10 @@ impl State {
                 if keyboard.is_grabbed() {
                     keyboard.unset_grab(self);
                 }
+            }
+
+            Action::Private(PrivateAction::Zone(zone_action)) => {
+                self.handle_zone_action(zone_action, seat);
             }
 
             Action::Private(PrivateAction::Resizing(direction, edge, state)) => {
@@ -1039,6 +1047,80 @@ impl State {
             // Do nothing
             Action::Disable => (),
         }
+    }
+
+    /// Move the focused window between zones, or open the editor.
+    fn handle_zone_action(&mut self, action: ZoneAction, seat: &Seat<State>) {
+        if action == ZoneAction::OpenEditor {
+            self.spawn_command(ZONE_EDITOR_COMMAND.into());
+            return;
+        }
+
+        let Some(KeyboardFocusTarget::Element(window)) =
+            seat.get_keyboard().unwrap().current_focus()
+        else {
+            return;
+        };
+        // Read the theme before taking the shell lock to keep the borrow simple.
+        let gaps = {
+            let gaps = self.common.theme.cosmic().gaps;
+            (gaps.0 as i32, gaps.1 as i32)
+        };
+        let output = seat.focused_or_active_output();
+
+        let mut shell = self.common.shell.write();
+        let workspace_id = shell
+            .active_space(&output)
+            .and_then(|workspace| workspace.id.clone());
+        let Some(context) = zones::ZoneContext::resolve(
+            &self.common.config.cosmic_conf.zones,
+            &output,
+            workspace_id.as_deref(),
+            gaps,
+        ) else {
+            return;
+        };
+
+        let existing: Vec<usize> = match window.floating_tiled.lock().unwrap().as_ref() {
+            Some(FloatingTiled::Zone { zones, .. }) => zones.clone(),
+            _ => Vec::new(),
+        };
+
+        let target = match action {
+            ZoneAction::CycleNext | ZoneAction::CyclePrev => {
+                let delta = if action == ZoneAction::CycleNext {
+                    1
+                } else {
+                    -1
+                };
+                match zones::cycle_index(existing.iter().copied().min(), context.len(), delta) {
+                    Some(index) => vec![index],
+                    None => return,
+                }
+            }
+            ZoneAction::GrowSpan | ZoneAction::ShrinkSpan => {
+                match zones::resize_span(&existing, context.len(), action == ZoneAction::GrowSpan) {
+                    Some(zones) => zones,
+                    None => return,
+                }
+            }
+            ZoneAction::OpenEditor => return,
+        };
+
+        let Some(hit) = context.hit_for(&target) else {
+            return;
+        };
+        let Some(workspace) = shell.active_space_mut(&output) else {
+            return;
+        };
+        workspace.floating_layer.snap_to(
+            &window,
+            &FloatingTiled::Zone {
+                layout: context.layout_id.clone(),
+                zones: hit.zones,
+                rect: hit.rect,
+            },
+        );
     }
 
     pub fn spawn_command(&mut self, command: String) {

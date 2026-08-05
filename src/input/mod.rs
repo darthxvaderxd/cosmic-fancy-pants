@@ -1907,6 +1907,23 @@ impl State {
             return FilterResult::Intercept(None);
         }
 
+        // Zone bindings are matched before the standard table so they can use
+        // combinations the user may also have bound elsewhere.
+        if !shortcuts_inhibited && event.state() == KeyState::Pressed {
+            let zones = &self.common.config.cosmic_conf.zones;
+            if zones.enabled
+                && let Some((action, binding)) =
+                    crate::shell::zones::match_shortcut(&zones.shortcuts, modifiers, &key_matches)
+            {
+                seat.modifiers_shortcut_queue().clear();
+                seat.supressed_keys().add(&handle, None);
+                return FilterResult::Intercept(Some((
+                    Action::Private(PrivateAction::Zone(action)),
+                    binding,
+                )));
+            }
+        }
+
         // handle the rest of the global shortcuts
         let mut clear_queue = true;
         if !shortcuts_inhibited {

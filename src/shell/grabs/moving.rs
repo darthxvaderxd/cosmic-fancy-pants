@@ -17,6 +17,8 @@ use crate::{
 
 use calloop::LoopHandle;
 use cosmic::theme::CosmicTheme;
+use cosmic_comp_config::zones::AppZoneMemory;
+use cosmic_config::ConfigSet;
 use smallvec::SmallVec;
 use smithay::{
     backend::{
@@ -47,6 +49,7 @@ use std::{
     sync::{Mutex, atomic::Ordering},
     time::Instant,
 };
+use tracing::warn;
 
 use super::{GrabStartData, ReleaseMode};
 
@@ -943,6 +946,10 @@ impl Drop for MoveGrab {
         let cursor_output = self.cursor_output.clone();
 
         let _ = self.evlh.0.insert_idle(move |state| {
+            // Recorded during the drop and persisted after the shell lock is
+            // released, since saving touches config rather than shell state.
+            let mut zone_memory: Option<(String, String, Vec<usize>)> = None;
+
             let position: Option<(CosmicMapped, Point<i32, Global>)> = if let Some(grab_state) =
                 seat.user_data()
                     .get::<SeatMoveGrabState>()
@@ -1025,6 +1032,12 @@ impl Drop for MoveGrab {
                                 if let Some(geo) = pre_drag_geometry {
                                     *window.last_geometry.lock().unwrap() = Some(geo);
                                 }
+
+                                zone_memory = Some((
+                                    window.active_window().app_id(),
+                                    zones.context.layout_id.clone(),
+                                    hit.zones.clone(),
+                                ));
                             } else if matches!(previous, ManagedLayer::Floating)
                                 && let Some(sz) = grab_state.snapping_zone
                             {
@@ -1088,6 +1101,10 @@ impl Drop for MoveGrab {
                 None
             };
 
+            if let Some((app_id, layout, zones)) = zone_memory {
+                remember_app_zone(state, app_id, layout, zones);
+            }
+
             let mut shell = state.common.shell.write();
             shell
                 .workspaces
@@ -1139,4 +1156,28 @@ impl Drop for MoveGrab {
             }
         });
     }
+}
+
+/// Persist where an app was last snapped, for `remember_apps`.
+///
+/// Writes through cosmic-config so the setting survives a restart, and updates
+/// the in-memory copy so it takes effect without waiting for the config watch
+/// to fire.
+fn remember_app_zone(state: &mut State, app_id: String, layout: String, zones: Vec<usize>) {
+    if app_id.is_empty() || !state.common.config.cosmic_conf.zones.remember_apps {
+        return;
+    }
+
+    let memory = AppZoneMemory { layout, zones };
+    let zones_conf = &mut state.common.config.cosmic_conf.zones;
+    if zones_conf.app_memory.get(&app_id) == Some(&memory) {
+        return;
+    }
+    zones_conf.app_memory.insert(app_id, memory);
+
+    let snapshot = zones_conf.clone();
+    if let Err(err) = state.common.config.cosmic_helper.set("zones", &snapshot) {
+        warn!(?err, "failed to persist app zone memory");
+    }
+    state.common.shell.write().set_zones_config(snapshot);
 }

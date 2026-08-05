@@ -10,10 +10,31 @@ pub enum Action {
     Shortcut(shortcuts::Action),
 }
 
+/// Zone actions triggered by our own bindings.
+///
+/// These deliberately do not go through `cosmic_settings_config::shortcuts::Action`:
+/// that enum lives in an external repository, so extending it would mean
+/// maintaining a second fork. They are matched ahead of the standard shortcut
+/// table instead.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ZoneAction {
+    /// Move the focused window to the next zone in the layout.
+    CycleNext,
+    /// Move the focused window to the previous zone.
+    CyclePrev,
+    /// Extend the focused window's span by one adjacent zone.
+    GrowSpan,
+    /// Reduce the focused window's span by one zone.
+    ShrinkSpan,
+    /// Launch the zone editor.
+    OpenEditor,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 // Behaviors which are internally defined and emitted.
 pub enum PrivateAction {
     Escape,
+    Zone(ZoneAction),
     Resizing(
         shortcuts::action::ResizeDirection,
         shortcuts::action::ResizeEdge,
