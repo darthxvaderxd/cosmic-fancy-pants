@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cosmic_comp_config::AppearanceConfig;
+use cosmic_comp_config::{AppearanceConfig, zones::ZoneRect};
 use cosmic_settings_config::shortcuts::action::ResizeDirection;
 use keyframe::{ease, functions::EaseInOutCubic};
 use smallvec::SmallVec;
@@ -131,7 +131,7 @@ impl Animation {
         &self,
         output_geometry: Rectangle<i32, Logical>,
         current_geometry: Rectangle<i32, Local>,
-        tiled_state: Option<&TiledCorners>,
+        tiled_state: Option<&FloatingTiled>,
         gaps: (i32, i32),
     ) -> Rectangle<i32, Local> {
         let (duration, target_rect) = match self {
@@ -265,6 +265,108 @@ impl TiledCorners {
     }
 }
 
+/// Fractional tolerance for deciding whether a zone edge sits on an output edge.
+const ZONE_EDGE_TOLERANCE: f64 = 1e-6;
+
+/// What a floating window is snapped to, if anything.
+///
+/// [`FloatingTiled::Corner`] is COSMIC's built-in half/quarter snapping;
+/// [`FloatingTiled::Zone`] is a user-defined FancyZones-style zone. Both
+/// resolve to a rectangle through the same method, so every consumer of the
+/// snap state — unmaximize, unminimize, workspace moves — keeps working for
+/// zones without knowing they exist.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FloatingTiled {
+    Corner(TiledCorners),
+    Zone {
+        /// Id of the layout this zone came from, kept for app memory and
+        /// keyboard cycling.
+        layout: String,
+        /// Zones covered; more than one index means a span.
+        zones: Vec<usize>,
+        rect: ZoneRect,
+    },
+}
+
+impl FloatingTiled {
+    /// The corner this is snapped to, or `None` for a zone.
+    ///
+    /// Used where a code path only understands corner snapping — notably
+    /// directional (arrow-key) moves, which treat a zoned window as unsnapped.
+    pub fn corner(&self) -> Option<TiledCorners> {
+        match self {
+            FloatingTiled::Corner(corner) => Some(*corner),
+            FloatingTiled::Zone { .. } => None,
+        }
+    }
+
+    pub fn relative_geometry(
+        &self,
+        output_geometry: Rectangle<i32, Logical>,
+        gaps: (i32, i32),
+    ) -> Rectangle<i32, Local> {
+        match self {
+            FloatingTiled::Corner(corner) => corner.relative_geometry(output_geometry, gaps),
+            FloatingTiled::Zone { rect, .. } => {
+                zone_relative_geometry(*rect, output_geometry, gaps)
+            }
+        }
+    }
+}
+
+/// Turn a fractional zone into pixels.
+///
+/// Gaps follow the same rule `TiledCorners` uses: a full gap against an output
+/// edge, half a gap against an interior edge, so neighbouring zones share one
+/// gutter instead of doubling it. Applied to halves and quarters this
+/// reproduces `TiledCorners::relative_geometry` exactly, which is what keeps
+/// zone-snapped and corner-snapped windows visually consistent.
+fn zone_relative_geometry(
+    rect: ZoneRect,
+    output_geometry: Rectangle<i32, Logical>,
+    gaps: (i32, i32),
+) -> Rectangle<i32, Local> {
+    let (_, inner) = gaps;
+    let rect = rect.clamped();
+    let (ow, oh) = (
+        output_geometry.size.w as f64,
+        output_geometry.size.h as f64,
+    );
+    // Integer division, deliberately: `TiledCorners` truncates an odd gap
+    // (`inner / 2`) rather than rounding it, and lets the window size absorb
+    // the leftover pixel. Using float division here puts zone-snapped windows
+    // 1px off from corner-snapped ones whenever the gap is odd.
+    let gap = |at_output_edge: bool| -> f64 {
+        if at_output_edge {
+            inner as f64
+        } else {
+            (inner / 2) as f64
+        }
+    };
+    // Floor for the same reason: `size.w / 2` truncates on odd output sizes.
+    let x0 = output_geometry.loc.x as f64
+        + (rect.x * ow).floor()
+        + gap(rect.x <= ZONE_EDGE_TOLERANCE);
+    let y0 = output_geometry.loc.y as f64
+        + (rect.y * oh).floor()
+        + gap(rect.y <= ZONE_EDGE_TOLERANCE);
+    let x1 = output_geometry.loc.x as f64 + (rect.right() * ow).floor()
+        - gap(rect.right() >= 1.0 - ZONE_EDGE_TOLERANCE);
+    let y1 = output_geometry.loc.y as f64 + (rect.bottom() * oh).floor()
+        - gap(rect.bottom() >= 1.0 - ZONE_EDGE_TOLERANCE);
+
+    // A zone narrower than its gaps would otherwise invert; clamp to 1px so a
+    // pathological layout can't produce a zero or negative sized window.
+    Rectangle::new(
+        Point::from((x0.round() as i32, y0.round() as i32)),
+        Size::from((
+            (x1 - x0).round().max(1.0) as i32,
+            (y1 - y0).round().max(1.0) as i32,
+        )),
+    )
+    .as_local()
+}
+
 impl FloatingLayout {
     pub fn new(
         theme: cosmic::Theme,
@@ -304,7 +406,7 @@ impl FloatingLayout {
             .collect::<Vec<_>>()
             .into_iter()
         {
-            let tiled_state = *mapped.floating_tiled.lock().unwrap();
+            let tiled_state = mapped.floating_tiled.lock().unwrap().clone();
             if let Some(tiled_state) = tiled_state {
                 let geometry = tiled_state.relative_geometry(output_geometry, self.gaps());
                 self.map_internal(
@@ -1181,7 +1283,12 @@ impl FloatingLayout {
                     current_geometry
                 };
 
-                let new_state = match (direction, &*tiled_state) {
+                // Directional moves only speak in corners, so a zone-snapped
+                // window is treated as unsnapped here and arrow keys fall
+                // through to plain half-screen snapping.
+                let corner_state = tiled_state.as_ref().and_then(FloatingTiled::corner);
+
+                let new_state = match (direction, corner_state) {
                     // figure out if we are moving between workspaces/outputs
                     (
                         Direction::Up,
@@ -1273,7 +1380,7 @@ impl FloatingLayout {
                     *element.last_geometry.lock().unwrap() = last_geometry;
                 }
 
-                *tiled_state = Some(new_state);
+                *tiled_state = Some(FloatingTiled::Corner(new_state));
                 std::mem::drop(tiled_state);
 
                 element.moved_since_mapped.store(true, Ordering::SeqCst);
@@ -1669,25 +1776,148 @@ impl FloatingLayout {
         }
     }
 
-    pub fn snap_to_corner(&self, mapped: &CosmicMapped, corners: &TiledCorners) {
-        *mapped.floating_tiled.lock().unwrap() = Some(*corners);
+    /// Snap a window to a corner or a zone and apply the resulting geometry.
+    pub fn snap_to(&self, mapped: &CosmicMapped, state: &FloatingTiled) {
+        *mapped.floating_tiled.lock().unwrap() = Some(state.clone());
         mapped.set_tiled(true);
-        let snapped_geo = self.snapped_geometry(corners);
+        let snapped_geo = self.snapped_geometry(state);
         let output = self.space.outputs().next().unwrap();
         mapped.set_geometry(snapped_geo.to_global(output));
         mapped.configure();
     }
 
-    fn snapped_geometry(&self, corners: &TiledCorners) -> Rectangle<i32, Local> {
+    pub fn snap_to_corner(&self, mapped: &CosmicMapped, corners: &TiledCorners) {
+        self.snap_to(mapped, &FloatingTiled::Corner(*corners));
+    }
+
+    fn snapped_geometry(&self, state: &FloatingTiled) -> Rectangle<i32, Local> {
         let output = self.space.outputs().next().unwrap().clone();
         let layers = layer_map_for_output(&output);
         let non_exclusive = layers.non_exclusive_zone();
         std::mem::drop(layers);
-        corners.relative_geometry(non_exclusive, self.gaps())
+        state.relative_geometry(non_exclusive, self.gaps())
     }
 
     fn gaps(&self) -> (i32, i32) {
         let g = self.theme.cosmic().gaps;
         (g.0 as i32, g.1 as i32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The fractional equivalent of each built-in corner snap.
+    fn corner_rects() -> [(TiledCorners, ZoneRect); 8] {
+        [
+            (TiledCorners::Top, ZoneRect::new(0.0, 0.0, 1.0, 0.5)),
+            (TiledCorners::Bottom, ZoneRect::new(0.0, 0.5, 1.0, 0.5)),
+            (TiledCorners::Left, ZoneRect::new(0.0, 0.0, 0.5, 1.0)),
+            (TiledCorners::Right, ZoneRect::new(0.5, 0.0, 0.5, 1.0)),
+            (TiledCorners::TopLeft, ZoneRect::new(0.0, 0.0, 0.5, 0.5)),
+            (TiledCorners::TopRight, ZoneRect::new(0.5, 0.0, 0.5, 0.5)),
+            (TiledCorners::BottomLeft, ZoneRect::new(0.0, 0.5, 0.5, 0.5)),
+            (TiledCorners::BottomRight, ZoneRect::new(0.5, 0.5, 0.5, 0.5)),
+        ]
+    }
+
+    /// A zone covering the same fractions as a corner snap must land on the
+    /// exact same pixels, so zone-snapped and corner-snapped windows line up.
+    ///
+    /// Restricted to even output dimensions. `TiledCorners` derives its size
+    /// from `size.w / 2` and `inner * 3 / 2` with integer truncation, so on an
+    /// odd-sized output it leaves an extra pixel unused against the far edge;
+    /// see [`zone_geometry_fills_odd_outputs`]. Odd *gaps* are covered here,
+    /// because those the zone path does reproduce exactly.
+    #[test]
+    fn zone_geometry_matches_corner_geometry() {
+        let mut mismatches = Vec::new();
+        for (w, h) in [(1920, 1080), (2560, 1440), (3840, 2160), (1366, 768)] {
+            for (ox, oy) in [(0, 0), (100, 37), (-250, -13)] {
+                for gaps in [(0, 0), (0, 4), (8, 8), (12, 5), (3, 1), (0, 7)] {
+                    let output = Rectangle::new(
+                        Point::<i32, Logical>::from((ox, oy)),
+                        Size::<i32, Logical>::from((w, h)),
+                    );
+                    for (corner, rect) in corner_rects() {
+                        let expected = corner.relative_geometry(output, gaps);
+                        let actual = zone_relative_geometry(rect, output, gaps);
+                        if expected != actual {
+                            mismatches.push(format!(
+                                "{w}x{h}+{ox}+{oy} gaps={gaps:?} {corner:?}: \
+                                 corner={expected:?} zone={actual:?}"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "zone geometry diverged from corner geometry:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    /// On an odd-sized output a zone still reaches exactly one gap from each
+    /// edge. `TiledCorners` truncates and leaves a pixel unused here; the zone
+    /// path deliberately does not, so full-width zones stay flush.
+    #[test]
+    fn zone_geometry_fills_odd_outputs() {
+        for (w, h) in [(1023, 641), (1365, 767)] {
+            for inner in [0, 1, 5, 8] {
+                let output = Rectangle::new(
+                    Point::<i32, Logical>::from((-250, -13)),
+                    Size::<i32, Logical>::from((w, h)),
+                );
+                let full = zone_relative_geometry(
+                    ZoneRect::new(0.0, 0.0, 1.0, 1.0),
+                    output,
+                    (0, inner),
+                );
+                assert_eq!(full.loc.x, output.loc.x + inner, "{w}x{h} inner={inner}");
+                assert_eq!(full.loc.y, output.loc.y + inner, "{w}x{h} inner={inner}");
+                assert_eq!(full.size.w, w - inner * 2, "{w}x{h} inner={inner}");
+                assert_eq!(full.size.h, h - inner * 2, "{w}x{h} inner={inner}");
+            }
+        }
+    }
+
+    /// Adjacent zones must not overlap or leave a seam: the right edge of a
+    /// left-hand zone and the left edge of its neighbour share one gutter.
+    #[test]
+    fn adjacent_zones_share_a_single_gutter() {
+        let output = Rectangle::new(
+            Point::<i32, Logical>::from((0, 0)),
+            Size::<i32, Logical>::from((1920, 1080)),
+        );
+        for inner in [0, 4, 5, 8, 12] {
+            let left =
+                zone_relative_geometry(ZoneRect::new(0.0, 0.0, 0.5, 1.0), output, (0, inner));
+            let right =
+                zone_relative_geometry(ZoneRect::new(0.5, 0.0, 0.5, 1.0), output, (0, inner));
+            assert!(
+                left.loc.x + left.size.w <= right.loc.x,
+                "zones overlap at inner={inner}: {left:?} / {right:?}"
+            );
+            let seam = right.loc.x - (left.loc.x + left.size.w);
+            assert!(seam <= inner, "seam {seam} exceeds gap {inner}");
+        }
+    }
+
+    /// A zone narrower than its own gaps must not invert into a negative size.
+    #[test]
+    fn degenerate_zone_clamps_to_positive_size() {
+        let output = Rectangle::new(
+            Point::<i32, Logical>::from((0, 0)),
+            Size::<i32, Logical>::from((1920, 1080)),
+        );
+        let sliver = zone_relative_geometry(
+            ZoneRect::new(0.0, 0.0, 0.005, 0.005),
+            output,
+            (0, 64),
+        );
+        assert!(sliver.size.w >= 1 && sliver.size.h >= 1, "{sliver:?}");
     }
 }

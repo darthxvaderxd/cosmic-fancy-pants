@@ -7,7 +7,7 @@ use crate::{
     shell::{
         ANIMATION_DURATION, OverviewMode, SeatMoveGrabState,
         layout::{
-            floating::{FloatingLayout, TiledCorners},
+            floating::{FloatingLayout, FloatingTiled},
             tiling::TilingLayout,
         },
     },
@@ -185,7 +185,7 @@ impl MinimizedWindow {
     pub fn unmaximize(
         &mut self,
         original_geometry: Rectangle<i32, Local>,
-        original_snapped: Option<TiledCorners>,
+        original_snapped: Option<FloatingTiled>,
     ) {
         match self {
             MinimizedWindow::Fullscreen { .. } => {}
@@ -304,7 +304,7 @@ pub struct FloatingRestoreData {
     pub geometry: Rectangle<i32, Local>,
     pub output_size: Size<i32, Logical>,
     pub was_maximized: bool,
-    pub was_snapped: Option<TiledCorners>,
+    pub was_snapped: Option<FloatingTiled>,
 }
 
 impl FloatingRestoreData {
@@ -669,7 +669,7 @@ impl Workspace {
             }));
         }
 
-        let was_snapped = *mapped.floating_tiled.lock().unwrap();
+        let was_snapped = mapped.floating_tiled.lock().unwrap().clone();
         // unmaximize_request might have triggered a `floating_layer.refresh()`,
         // which may have already removed a non-alive surface.
         if let Some(floating_geometry) = self.floating_layer.unmap(mapped, None).or(was_maximized) {
@@ -1024,8 +1024,8 @@ impl Workspace {
                             None,
                         );
                         // Re-apply the snap if the window was snapped before maximizing
-                        if let Some(corners) = state.original_snapped {
-                            self.floating_layer.snap_to_corner(elem, &corners);
+                        if let Some(snapped) = state.original_snapped.as_ref() {
+                            self.floating_layer.snap_to(elem, snapped);
                         }
                         Some(state.original_geometry)
                     }
@@ -1099,8 +1099,8 @@ impl Workspace {
             mapped.set_geometry(original_geometry.to_global(&self.output));
             mapped.set_maximized(false);
             // Restore the snap marker to lett unminimize re-apply it.
-            if let Some(corners) = original_snapped {
-                *mapped.floating_tiled.lock().unwrap() = Some(corners);
+            if let Some(snapped) = original_snapped {
+                *mapped.floating_tiled.lock().unwrap() = Some(snapped);
             }
             Some(original_geometry)
         } else {
@@ -1110,7 +1110,7 @@ impl Workspace {
         mapped.set_minimized(true);
         mapped.configure();
 
-        let was_snapped = *mapped.floating_tiled.lock().unwrap();
+        let was_snapped = mapped.floating_tiled.lock().unwrap().clone();
         if let Some(geometry) = self.floating_layer.unmap(&mapped, Some(to)) {
             return Some(MinimizedWindow::Floating {
                 window: mapped,
@@ -1184,8 +1184,8 @@ impl Workspace {
                     });
                     std::mem::drop(state);
                     self.floating_layer.map_maximized(window, geometry, true);
-                } else if let Some(corners) = previous.was_snapped {
-                    self.floating_layer.snap_to_corner(&window, &corners);
+                } else if let Some(snapped) = previous.was_snapped.as_ref() {
+                    self.floating_layer.snap_to(&window, snapped);
                 }
 
                 None

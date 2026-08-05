@@ -2742,8 +2742,8 @@ impl Shell {
                         fullscreen_geometry,
                         true,
                     );
-                } else if let Some(corners) = was_snapped {
-                    workspace.floating_layer.snap_to_corner(&window, &corners);
+                } else if let Some(snapped) = was_snapped.as_ref() {
+                    workspace.floating_layer.snap_to(&window, snapped);
                 }
             }
             Some(FullscreenRestoreState::Tiling {
@@ -3496,7 +3496,7 @@ impl Shell {
                 WorkspaceRestoreData::Floating(data) => (
                     Some(data.position_relative(to_workspace.output.geometry().size.as_logical())),
                     data.was_maximized,
-                    data.was_snapped,
+                    data.was_snapped.clone(),
                 ),
                 _ => (None, false, None),
             };
@@ -3514,8 +3514,8 @@ impl Shell {
                 to_workspace
                     .floating_layer
                     .map_maximized(mapped.clone(), geometry, false);
-            } else if let Some(corners) = was_snapped {
-                to_workspace.floating_layer.snap_to_corner(mapped, &corners);
+            } else if let Some(snapped) = was_snapped.as_ref() {
+                to_workspace.floating_layer.snap_to(mapped, snapped);
             }
         } else {
             for mapped in to_workspace
@@ -4458,8 +4458,8 @@ impl Shell {
                         None,
                     );
                     // Re-apply the snap if the window was snapped when it was maximized.
-                    if let Some(corners) = state.original_snapped {
-                        set.sticky_layer.snap_to_corner(mapped, &corners);
+                    if let Some(snapped) = state.original_snapped.as_ref() {
+                        set.sticky_layer.snap_to(mapped, snapped);
                     }
                 }
                 Some(state.original_geometry.size.as_logical())
@@ -4736,7 +4736,7 @@ impl Shell {
                 original_geometry,
                 original_layer: _,
                 original_snapped,
-            }) = *state
+            }) = state.clone()
             {
                 *state = Some(MaximizedState {
                     original_geometry,
@@ -4786,7 +4786,7 @@ impl Shell {
                 original_geometry,
                 original_layer: _,
                 original_snapped,
-            }) = *state
+            }) = state.clone()
             {
                 *state = Some(MaximizedState {
                     original_geometry,

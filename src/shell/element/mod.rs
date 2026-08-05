@@ -72,7 +72,7 @@ use super::{
     ManagedLayer,
     focus::target::PointerFocusTarget,
     layout::{
-        floating::{ResizeState, TiledCorners},
+        floating::{FloatingTiled, ResizeState},
         tiling::NodeDesc,
     },
 };
@@ -85,11 +85,11 @@ space_elements! {
     Stack=CosmicStack,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct MaximizedState {
     pub original_geometry: Rectangle<i32, Local>,
     pub original_layer: ManagedLayer,
-    pub original_snapped: Option<TiledCorners>,
+    pub original_snapped: Option<FloatingTiled>,
 }
 
 #[derive(Clone)]
@@ -105,7 +105,7 @@ pub struct CosmicMapped {
     pub(super) resize_state: Arc<Mutex<Option<ResizeState>>>,
     pub last_geometry: Arc<Mutex<Option<Rectangle<i32, Local>>>>,
     pub moved_since_mapped: Arc<AtomicBool>,
-    pub floating_tiled: Arc<Mutex<Option<TiledCorners>>>,
+    pub floating_tiled: Arc<Mutex<Option<FloatingTiled>>>,
     //sticky
     pub previous_layer: Arc<Mutex<Option<ManagedLayer>>>,
 
