@@ -21,7 +21,7 @@ use cosmic::{
 };
 use cosmic_comp_config::{
     workspace::OutputMatch,
-    zones::{DEFAULT_LAYOUT_ID, ZoneLayout, ZoneRect, ZonesConfig, default_layouts},
+    zones::{DEFAULT_LAYOUT_ID, ZoneLayout, ZoneRect, ZonesConfig, is_default_layout_id},
 };
 use cosmic_config::{ConfigGet, ConfigSet};
 use tracing::{error, info, warn};
@@ -61,7 +61,9 @@ impl EditorOutput {
 #[derive(Debug, Clone)]
 pub enum Message {
     /// Wayland told us about an output appearing, changing, or going away.
-    Output(OutputEvent, WlOutput, OutputInfoLite),
+    /// Boxed because `OutputEvent` carries a whole `OutputInfo`, which would
+    /// otherwise set the size of every message in this enum.
+    Output(Box<OutputEvent>, WlOutput, OutputInfoLite),
     /// Pick a different layout for the output showing this surface.
     SelectLayout(cosmic::iced::window::Id, String),
     /// A boundary drag produced a new set of zones for this surface.
@@ -91,11 +93,26 @@ pub enum Scope {
     Workspace,
 }
 
+/// What the compositor told us when it launched the editor.
+///
+/// Neither value is discoverable from Wayland: workspace ids are
+/// compositor-internal, and there is no protocol for "the output the user was
+/// on". Both are absent when the editor is started from the app library.
+#[derive(Debug, Default, Clone)]
+pub struct Launch {
+    pub workspace: Option<String>,
+    /// Connector name of the output the editor was opened from.
+    pub output: Option<String>,
+}
+
 pub struct Editor {
     core: Core,
     /// Workspace the compositor was on when it launched us, if it told us.
     /// `None` means workspace assignment is unavailable.
     pub workspace: Option<String>,
+    /// Output the editor was opened from, by connector name. Decides which
+    /// overlay's layout a workspace assignment takes.
+    opened_on: Option<String>,
     pub scope: Scope,
     /// Working copy. Edits mutate this; `Save` writes it out, `Cancel` drops it.
     pub config: ZonesConfig,
@@ -105,14 +122,28 @@ pub struct Editor {
 }
 
 impl Editor {
-    /// Layout currently selected for a surface, falling back to the built-in
-    /// default so the overlay always has something to draw.
-    pub fn layout_for(&self, id: cosmic::iced::window::Id) -> Option<&ZoneLayout> {
+    /// Id of the layout currently shown on a surface, after falling back to
+    /// the built-in default so the overlay always has something to draw.
+    ///
+    /// The picker matches on this rather than on the layout's display name:
+    /// names are not unique, so two layouts sharing one would both render as
+    /// selected, and when the fallback is in play the output's own `layout_id`
+    /// points at a layout that no longer exists.
+    pub fn layout_id_for(&self, id: cosmic::iced::window::Id) -> Option<&str> {
         let output = self.outputs.get(&id)?;
-        self.config
-            .layouts
-            .get(&output.layout_id)
-            .or_else(|| self.config.layouts.get(DEFAULT_LAYOUT_ID))
+        if self.config.layouts.contains_key(&output.layout_id) {
+            Some(output.layout_id.as_str())
+        } else {
+            self.config
+                .layouts
+                .contains_key(DEFAULT_LAYOUT_ID)
+                .then_some(DEFAULT_LAYOUT_ID)
+        }
+    }
+
+    /// Layout currently selected for a surface.
+    pub fn layout_for(&self, id: cosmic::iced::window::Id) -> Option<&ZoneLayout> {
+        self.config.layouts.get(self.layout_id_for(id)?)
     }
 
     fn load_config() -> (Option<cosmic_config::Config>, ZonesConfig) {
@@ -145,7 +176,7 @@ impl Editor {
         };
         let current = output.layout_id.clone();
 
-        let target = if default_layouts().contains_key(&current) {
+        let target = if is_default_layout_id(&current) {
             let forked = self.next_custom_id();
             let name = self
                 .config
@@ -176,31 +207,43 @@ impl Editor {
             .expect("an unused custom layout id always exists")
     }
 
+    /// Layout a workspace assignment should pin.
+    ///
+    /// A workspace holds exactly one layout, so only one overlay can claim it:
+    /// the one on the output the editor was opened from. When the compositor
+    /// did not name that output — launched from the app library — the lowest
+    /// connector name wins, because `HashMap` order is arbitrary and picking
+    /// the "first" output would pin a different monitor's layout run to run.
+    fn workspace_layout_id(&self) -> Option<String> {
+        let opened_on = self.opened_on.as_deref();
+        self.outputs
+            .values()
+            .find(|output| opened_on.is_some_and(|name| name == output.name))
+            .or_else(|| self.outputs.values().min_by_key(|output| &output.name))
+            .map(|output| output.layout_id.clone())
+    }
+
     fn save(&mut self) -> Task<Message> {
         let Some(handle) = self.config_handle.as_ref() else {
             error!("no config handle; refusing to discard edits silently");
             return Task::none();
         };
 
-        // Record each overlay's selection before writing.
-        match (self.scope, self.workspace.clone()) {
-            (Scope::Workspace, Some(workspace)) => {
-                // A workspace has one layout, so only the output the editor was
-                // opened on can meaningfully claim it. Assigning every overlay
-                // would have the last one silently win.
-                if let Some(output) = self.outputs.values().next() {
-                    self.config
-                        .per_workspace
-                        .insert(workspace, output.layout_id.clone());
-                }
-            }
-            _ => {
-                for output in self.outputs.values() {
-                    self.config
-                        .per_output
-                        .insert(output.output_match(), output.layout_id.clone());
-                }
-            }
+        // Every overlay's picker is a real choice the user made about that
+        // monitor, so monitor assignments are always recorded. A workspace
+        // assignment layers on top of them — it takes precedence when that
+        // workspace is active — rather than replacing them, which is why this
+        // is not an either/or.
+        for output in self.outputs.values() {
+            self.config
+                .per_output
+                .insert(output.output_match(), output.layout_id.clone());
+        }
+
+        if let (Scope::Workspace, Some(workspace)) = (self.scope, self.workspace.clone())
+            && let Some(layout_id) = self.workspace_layout_id()
+        {
+            self.config.per_workspace.insert(workspace, layout_id);
         }
 
         match handle.set(ZONES_KEY, &self.config) {
@@ -267,7 +310,7 @@ impl Editor {
 
 impl cosmic::Application for Editor {
     type Executor = cosmic::executor::Default;
-    type Flags = Option<String>;
+    type Flags = Launch;
     type Message = Message;
 
     const APP_ID: &'static str = "dev.nilfactor.CosmicFancyPantsEditor";
@@ -280,12 +323,13 @@ impl cosmic::Application for Editor {
         &mut self.core
     }
 
-    fn init(core: Core, workspace: Self::Flags) -> (Self, Task<Self::Message>) {
+    fn init(core: Core, launch: Self::Flags) -> (Self, Task<Self::Message>) {
         let (config_handle, config) = Self::load_config();
         (
             Self {
                 core,
-                workspace,
+                workspace: launch.workspace,
+                opened_on: launch.output,
                 scope: Scope::Output,
                 config,
                 outputs: HashMap::new(),
@@ -318,7 +362,7 @@ impl cosmic::Application for Editor {
                     }
                     _ => OutputInfoLite::default(),
                 };
-                Some(Message::Output(output_event, wl_output, info))
+                Some(Message::Output(Box::new(output_event), wl_output, info))
             }
             _ => None,
         })
@@ -326,7 +370,7 @@ impl cosmic::Application for Editor {
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
         match message {
-            Message::Output(event, wl_output, info) => match event {
+            Message::Output(event, wl_output, info) => match *event {
                 OutputEvent::Created(Some(_)) => {
                     if info.name.is_empty() {
                         warn!("output reported without a name; skipping overlay");

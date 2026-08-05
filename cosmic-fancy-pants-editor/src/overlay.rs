@@ -24,7 +24,7 @@ pub fn view(app: &Editor, id: cosmic::iced::window::Id) -> Element<'_, Message> 
     let Some(output) = app.outputs.get(&id) else {
         return widget::text("").into();
     };
-    let Some(layout) = app.layout_for(id) else {
+    let (Some(layout), Some(selected_id)) = (app.layout_for(id), app.layout_id_for(id)) else {
         return widget::text("no layouts available").into();
     };
 
@@ -40,7 +40,7 @@ pub fn view(app: &Editor, id: cosmic::iced::window::Id) -> Element<'_, Message> 
         id,
         &output.name,
         output.logical_size,
-        &layout.name,
+        selected_id,
         &app.config,
         app.scope,
         app.workspace.is_some(),
@@ -127,7 +127,7 @@ fn toolbar<'a>(
     id: cosmic::iced::window::Id,
     output_name: &'a str,
     logical_size: (u32, u32),
-    layout_name: &'a str,
+    selected_id: &'a str,
     config: &'a ZonesConfig,
     scope: Scope,
     workspace_known: bool,
@@ -144,7 +144,9 @@ fn toolbar<'a>(
             .get(layout_id)
             .map(|l| l.name.as_str())
             .unwrap_or(layout_id.as_str());
-        let selected = name == layout_name;
+        // By id: display names are not unique, and the id is what actually
+        // gets written to the config.
+        let selected = layout_id.as_str() == selected_id;
         let mut button = widget::button::standard(name);
         if !selected {
             button = button.on_press(Message::SelectLayout(id, layout_id.clone()));
