@@ -95,6 +95,16 @@ Some behaviour is deliberate and would otherwise look like a bug:
   including odd gap values, so zone- and corner-snapped windows line up. It
   deliberately differs on odd-sized outputs, where upstream's integer
   truncation leaves a pixel unused against the far edge.
+- **A snap carries the gap it was made with**, so placement uses the spacing the
+  drag overlay previewed. Deriving it from the theme at placement time landed
+  windows with different spacing than the user had just been shown.
+- **Output lookup falls back to connector name.** Wayland does not expose EDID
+  to clients, so the editor writes `edid: None` while the compositor's key
+  carries the monitor's real EDID; an exact match silently disabled zones on any
+  monitor that reports one.
+- **Only the configured modifiers must be held**, not matched exactly. Super is
+  how COSMIC starts a window move, so requiring it to be absent made zones
+  unreachable from that gesture.
 
 ## Relationship to upstream
 
@@ -131,11 +141,11 @@ COSMIC_BACKEND=winit cargo run
 
 ## Known gaps
 
-- The editor reshapes layouts but cannot split or merge zones, so custom
-  layouts inherit their zone count from the template they were forked from.
 - Workspace layouts are assigned by keyboard shortcut; the editor has no UI for
   it. The `ext-workspace` protocol does expose the ids this would need.
 - Zone numbers are drawn in the editor but not in the drag overlay.
+- Changing the gap does not re-layout windows already snapped, since each snap
+  records the gap it was made with.
 
 ## License
 

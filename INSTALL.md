@@ -57,14 +57,24 @@ That is the whole recovery: the packaged compositor is untouched throughout.
 Zones are opt-in per monitor — nothing changes until a layout is assigned.
 
 1. Open **Zone Editor** from the app library, or press **Super+Shift+`**.
-2. Pick a template, drag the boundaries between zones to reshape it, and
-   **Save**. Editing a built-in template forks it to a custom layout rather than
-   redefining the template everywhere.
+2. Pick a template and shape it, then **Save**:
+   - **Drag a boundary** to resize the zones either side of it.
+   - **Click inside a zone** to split it at that point. It splits along the
+     longer side, so a wide zone becomes two columns and a tall one two rows;
+     **Shift+click** picks the other axis.
+   - **Right-click a boundary** to delete it, merging the zones across it.
+   - **Padding** sets the space between snapped windows.
+
+   Editing a built-in template forks it to a custom layout rather than
+   redefining the template everywhere it is used.
 3. Hold **Shift** while dragging a window. The layout appears, the zone under
    the cursor highlights, and releasing snaps the window into it.
 
 Hovering near the edge shared by two adjacent zones targets both, snapping the
 window across their combined area.
+
+Any modifier held to start the drag is ignored, so Super+drag — COSMIC's window
+move gesture — works as well as dragging the title bar.
 
 ## Configuration
 
@@ -84,7 +94,11 @@ The compositor watches this file, so edits apply without a restart.
 | `adjacent_highlight_distance` | `16` | Pixels from a shared edge that activate both zones |
 | `show_zone_numbers` | `true` | Draw zone numbers in the editor |
 | `inactive_opacity` | `50` | Opacity of non-targeted zones in the drag overlay |
+| `gap` | `None` | Space between snapped windows, in pixels. `None` follows COSMIC's global window gap |
 | `remember_apps` | `false` | Re-open an app in the zone it last occupied |
+
+A window records the gap it was snapped with, so changing `gap` affects new
+snaps rather than re-laying out windows already sitting in zones.
 
 ### Keyboard shortcuts
 
@@ -113,6 +127,7 @@ snap_next: Some((
 
 ## Known gaps
 
-- The editor reshapes a layout but cannot split or merge zones, so custom
-  layouts inherit their zone count from the template they were forked from.
 - Workspace layouts are assigned by shortcut; the editor has no UI for it yet.
+- Zone numbers are drawn in the editor but not in the drag overlay.
+- Changing `gap` does not re-layout windows already snapped; they keep the
+  spacing they were snapped with until moved again.
