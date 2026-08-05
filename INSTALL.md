@@ -4,6 +4,37 @@ Zones live inside the compositor, so using them means running a patched
 `cosmic-comp` in place of the packaged one. The editor on its own does nothing:
 stock `cosmic-comp` ignores the `zones` config key.
 
+## Build dependencies
+
+On Pop!_OS or Ubuntu:
+
+```sh
+sudo apt install build-essential pkg-config libudev-dev libgbm-dev libdrm-dev \
+    libegl1-mesa-dev libinput-dev libseat-dev libdisplay-info-dev \
+    libpixman-1-dev libxkbcommon-dev libwayland-dev libsystemd-dev
+```
+
+Every one of those backs a smithay backend the compositor enables, so a missing
+package fails the build in a `*-sys` crate rather than at link time:
+
+| Package | Needed by |
+| --- | --- |
+| `libudev-dev` | device enumeration, `backend_udev` |
+| `libgbm-dev`, `libdrm-dev` | `backend_gbm`; `gbm.pc` requires `libdrm` |
+| `libegl1-mesa-dev` | `backend_egl`, and the editor's EGL surface |
+| `libinput-dev` | `backend_libinput` |
+| `libseat-dev` | `backend_session_libseat` |
+| `libdisplay-info-dev` | EDID parsing |
+| `libpixman-1-dev` | `renderer_pixman`, the software fallback |
+| `libxkbcommon-dev`, `libwayland-dev` | keymaps and the Wayland socket |
+| `libsystemd-dev` | the default `systemd` feature; drop it with `--no-default-features` |
+
+Ubuntu 24.04 ships `libdisplay-info` 0.1 against a 0.3 crate, which is fine —
+the crate detects the installed version and selects its API at build time.
+
+Rust comes from `rustup`, not apt: the toolchain is pinned in
+`rust-toolchain.toml` and apt's `rustc` is older than the pin.
+
 ## Install
 
 Both binaries go to `/usr/local/bin`, which precedes `/usr/bin` in the session
