@@ -207,20 +207,19 @@ impl Editor {
             .expect("an unused custom layout id always exists")
     }
 
-    /// Layout a workspace assignment should pin.
+    /// Overlay whose choice a workspace assignment takes.
     ///
     /// A workspace holds exactly one layout, so only one overlay can claim it:
     /// the one on the output the editor was opened from. When the compositor
     /// did not name that output — launched from the app library — the lowest
     /// connector name wins, because `HashMap` order is arbitrary and picking
     /// the "first" output would pin a different monitor's layout run to run.
-    fn workspace_layout_id(&self) -> Option<String> {
+    fn workspace_output(&self) -> Option<&EditorOutput> {
         let opened_on = self.opened_on.as_deref();
         self.outputs
             .values()
             .find(|output| opened_on.is_some_and(|name| name == output.name))
             .or_else(|| self.outputs.values().min_by_key(|output| &output.name))
-            .map(|output| output.layout_id.clone())
     }
 
     fn save(&mut self) -> Task<Message> {
@@ -229,20 +228,32 @@ impl Editor {
             return Task::none();
         };
 
-        // Every overlay's picker is a real choice the user made about that
-        // monitor, so monitor assignments are always recorded. A workspace
-        // assignment layers on top of them — it takes precedence when that
-        // workspace is active — rather than replacing them, which is why this
-        // is not an either/or.
+        // "Apply to workspace" means exactly one monitor's choice becomes the
+        // workspace's, and that monitor's own default is deliberately left
+        // alone — pinning it too would be the opposite of what the toggle says.
+        // Every *other* overlay's picker is still a real choice the user made
+        // about that monitor, though, so those are recorded either way; not
+        // doing so is how a multi-monitor session used to lose them silently.
+        let workspace_assignment = match (self.scope, self.workspace.clone()) {
+            (Scope::Workspace, Some(workspace)) => self
+                .workspace_output()
+                .map(|output| (workspace, output.name.clone(), output.layout_id.clone())),
+            _ => None,
+        };
+        let claimed_by_workspace = workspace_assignment
+            .as_ref()
+            .map(|(_, name, _)| name.clone());
+
         for output in self.outputs.values() {
+            if claimed_by_workspace.as_deref() == Some(output.name.as_str()) {
+                continue;
+            }
             self.config
                 .per_output
                 .insert(output.output_match(), output.layout_id.clone());
         }
 
-        if let (Scope::Workspace, Some(workspace)) = (self.scope, self.workspace.clone())
-            && let Some(layout_id) = self.workspace_layout_id()
-        {
+        if let Some((workspace, _, layout_id)) = workspace_assignment {
             self.config.per_workspace.insert(workspace, layout_id);
         }
 

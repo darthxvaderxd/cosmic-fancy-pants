@@ -98,6 +98,14 @@ Zones are opt-in per monitor — nothing changes until a layout is assigned.
 
    Editing a built-in template forks it to a custom layout rather than
    redefining the template everywhere it is used.
+
+   **Apply to** decides what Save pins the layout to. **Monitor** is the
+   default and sets the monitor's layout. **Workspace** pins it to the
+   workspace that was active when the editor opened and deliberately leaves
+   that monitor's default alone — a workspace assignment wins while that
+   workspace is active, and the monitor keeps whatever it had everywhere else.
+   Either way, choices made on your *other* monitors are saved as their
+   defaults, since there is nowhere else for them to go.
 3. Hold **Shift** while dragging a window. The layout appears, the zone under
    the cursor highlights, and releasing snaps the window into it.
 
@@ -141,6 +149,10 @@ under a separate key:
 It is separate because it is rewritten on every drop-snap, while `zones` is
 rewritten when the editor saves; sharing one key meant a snap and a save could
 overwrite each other. Deleting this file clears the memory and nothing else.
+
+Configs written before the split keep their memory: the compositor moves it to
+the new key on first start and rewrites `zones` without it, so the move happens
+once and deleting the file really does clear it.
 
 ### Keyboard shortcuts
 

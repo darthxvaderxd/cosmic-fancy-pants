@@ -274,9 +274,16 @@ pub fn match_shortcut(
 /// Resolve an XKB keysym name such as `"grave"` or `"Left"`.
 ///
 /// Memoised: `keysym_from_name` is a lookup into xkbcommon's name table, and
-/// this sits on the per-key-press path. Binding names come from configuration,
-/// so the set of distinct strings is small and fixed for a session. The cache
-/// is thread-local to stay lock-free — key handling runs on one thread, and a
+/// this sits on the per-key-press path.
+///
+/// Nothing is ever evicted. The keys are binding names read from
+/// configuration, so the cache grows only when the user edits a zone binding
+/// to a name they have not used before — bounded by however many names they
+/// try, at a `String` and a `Keysym` each. Not worth an eviction policy, but
+/// it is unbounded in principle rather than fixed at startup: the config is
+/// watched, so new names can arrive at any time.
+///
+/// Thread-local to stay lock-free — key handling runs on one thread, and a
 /// duplicate entry on another would be harmless anyway.
 fn parse_keysym(name: &str) -> Option<Keysym> {
     thread_local! {
