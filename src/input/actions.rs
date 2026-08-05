@@ -1058,11 +1058,19 @@ impl State {
                 // id is allocated lazily, as assignment does, since most
                 // workspaces have none until something needs to name them.
                 let workspace_id = self.active_workspace_id(seat);
-                let command = match workspace_id {
-                    Some(id) => format!("{ZONE_EDITOR_COMMAND} --workspace {id}"),
-                    None => ZONE_EDITOR_COMMAND.to_string(),
-                };
-                self.spawn_command(command);
+                // The editor opens an overlay on every output and cannot tell
+                // which one the user was on, so name it: a workspace holds one
+                // layout, and without this the editor has to guess which
+                // overlay's choice to pin to it.
+                let mut args = vec![
+                    "--output".to_string(),
+                    seat.focused_or_active_output().name(),
+                ];
+                if let Some(id) = workspace_id {
+                    args.push("--workspace".to_string());
+                    args.push(id);
+                }
+                self.spawn_program(ZONE_EDITOR_COMMAND, &args);
                 return;
             }
             ZoneAction::AssignToWorkspace | ZoneAction::ClearWorkspace => {
@@ -1119,7 +1127,11 @@ impl State {
                 }
             }
             ZoneAction::GrowSpan | ZoneAction::ShrinkSpan => {
-                match zones::resize_span(&existing, context.len(), action == ZoneAction::GrowSpan) {
+                match zones::resize_span(
+                    context.layout(),
+                    &existing,
+                    action == ZoneAction::GrowSpan,
+                ) {
                     Some(zones) => zones,
                     None => return,
                 }
@@ -1230,7 +1242,28 @@ impl State {
         self.common.shell.write().set_zones_config(snapshot);
     }
 
+    /// Spawn a program directly, without a shell.
+    ///
+    /// `spawn_command` exists for user-configured command *lines*, which have
+    /// to go through `/bin/sh -c` to keep their quoting and pipelines working.
+    /// Anything the compositor launches itself knows its own argv, so it has no
+    /// business interpolating values into a shell string.
+    pub fn spawn_program(&mut self, program: &str, args: &[String]) {
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(args);
+        self.spawn_with_activation(cmd, program.to_string());
+    }
+
     pub fn spawn_command(&mut self, command: String) {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.arg("-c").arg(&command);
+        self.spawn_with_activation(cmd, command);
+    }
+
+    /// Attach the session environment and an activation token, then run it.
+    ///
+    /// `description` is only used for the failure log.
+    fn spawn_with_activation(&mut self, mut cmd: std::process::Command, description: String) {
         let mut shell = self.common.shell.write();
 
         let (token, data) = self.common.xdg_activation_state.create_external_token(None);
@@ -1251,11 +1284,7 @@ impl State {
             .map(|s| format!(":{}", s.display))
             .unwrap_or_default();
 
-        let mut cmd = std::process::Command::new("/bin/sh");
-
-        cmd.arg("-c")
-            .arg(&command)
-            .env("WAYLAND_DISPLAY", &wayland_display)
+        cmd.env("WAYLAND_DISPLAY", &wayland_display)
             .env("DISPLAY", &display)
             .env("XDG_ACTIVATION_TOKEN", &*token)
             .env("DESKTOP_STARTUP_ID", &*token)
@@ -1272,7 +1301,7 @@ impl State {
                 let _res = child.wait();
             }
             Err(err) => {
-                tracing::warn!(?err, "Failed to spawn \"{}\"", command);
+                tracing::warn!(?err, "Failed to spawn \"{}\"", description);
             }
         });
     }

@@ -932,6 +932,11 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut 
                 state.common.config.cosmic_conf.zones = value.clone();
                 state.common.shell.write().set_zones_config(value);
             }
+            "zone_app_memory" => {
+                let value = get_config::<zones::AppZoneMemories>(&config, "zone_app_memory");
+                state.common.config.cosmic_conf.zone_app_memory = value.clone();
+                state.common.shell.write().set_zone_app_memory(value);
+            }
             "edge_snap_threshold" => {
                 let new = get_config::<u32>(&config, "edge_snap_threshold");
                 if new != state.common.config.cosmic_conf.edge_snap_threshold {

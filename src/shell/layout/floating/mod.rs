@@ -268,6 +268,12 @@ impl TiledCorners {
 /// Fractional tolerance for deciding whether a zone edge sits on an output edge.
 const ZONE_EDGE_TOLERANCE: f64 = 1e-6;
 
+/// Sub-pixel slack absorbed before flooring a zone edge, in pixels.
+///
+/// Two zones that share an edge can compute that edge to within an ULP of each
+/// other rather than exactly; without this the floor turns that into a 1px seam.
+const SEAM_EPSILON: f64 = 1e-6;
+
 /// What a floating window is snapped to, if anything.
 ///
 /// [`FloatingTiled::Corner`] is COSMIC's built-in half/quarter snapping;
@@ -352,13 +358,20 @@ pub(crate) fn zone_relative_geometry(
         }
     };
     // Floor for the same reason: `size.w / 2` truncates on odd output sizes.
-    let x0 =
-        output_geometry.loc.x as f64 + (rect.x * ow).floor() + gap(rect.x <= ZONE_EDGE_TOLERANCE);
-    let y0 =
-        output_geometry.loc.y as f64 + (rect.y * oh).floor() + gap(rect.y <= ZONE_EDGE_TOLERANCE);
-    let x1 = output_geometry.loc.x as f64 + (rect.right() * ow).floor()
+    //
+    // The nudge before flooring matters. A zone's `right()` is `x + w`, while
+    // its neighbour's `x` was computed some other way — `i * w` for a template,
+    // or the split point for an editor-authored layout — and on fractions that
+    // are not exact in binary the two land one ULP apart. `floor` then turns
+    // that into a whole pixel of daylight between two zones that share an edge.
+    // `SEAM_EPSILON` is far below one pixel at any real resolution, so it only
+    // ever absorbs that representation error.
+    let edge = |frac: f64, extent: f64| -> f64 { (frac * extent + SEAM_EPSILON).floor() };
+    let x0 = output_geometry.loc.x as f64 + edge(rect.x, ow) + gap(rect.x <= ZONE_EDGE_TOLERANCE);
+    let y0 = output_geometry.loc.y as f64 + edge(rect.y, oh) + gap(rect.y <= ZONE_EDGE_TOLERANCE);
+    let x1 = output_geometry.loc.x as f64 + edge(rect.right(), ow)
         - gap(rect.right() >= 1.0 - ZONE_EDGE_TOLERANCE);
-    let y1 = output_geometry.loc.y as f64 + (rect.bottom() * oh).floor()
+    let y1 = output_geometry.loc.y as f64 + edge(rect.bottom(), oh)
         - gap(rect.bottom() >= 1.0 - ZONE_EDGE_TOLERANCE);
 
     // A zone narrower than its gaps would otherwise invert; clamp to 1px so a
@@ -1950,6 +1963,42 @@ mod tests {
             let seam = right.loc.x - (left.loc.x + left.size.w);
             assert!(seam <= inner, "seam {seam} exceeds gap {inner}");
         }
+    }
+
+    /// Regression: on fractions that are not exact in binary, a zone's
+    /// `right()` and its neighbour's `x` differ by an ULP, and flooring turned
+    /// that into a whole pixel of daylight. `columns(7)` seamed on hundreds of
+    /// output widths this way; halves and quarters are exact in binary, so
+    /// [`zone_geometry_matches_corner_geometry`] could never catch it.
+    #[test]
+    fn odd_fractions_do_not_seam() {
+        let mut seams = Vec::new();
+        for n in [3usize, 5, 6, 7, 9, 11] {
+            let layout = cosmic_comp_config::zones::columns(n, "test");
+            for w in 800..=2000 {
+                let output = Rectangle::new(
+                    Point::<i32, Logical>::from((0, 0)),
+                    Size::<i32, Logical>::from((w, 1080)),
+                );
+                let geos: Vec<_> = layout
+                    .zones
+                    .iter()
+                    .map(|zone| zone_relative_geometry(*zone, output, (0, 0)))
+                    .collect();
+                for pair in geos.windows(2) {
+                    let gap = pair[1].loc.x - (pair[0].loc.x + pair[0].size.w);
+                    if gap != 0 {
+                        seams.push(format!("columns({n}) at {w}px: gap of {gap}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            seams.is_empty(),
+            "{} seams, first few:\n{}",
+            seams.len(),
+            seams[..seams.len().min(5)].join("\n")
+        );
     }
 
     /// A zone narrower than its own gaps must not invert into a negative size.

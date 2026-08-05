@@ -105,6 +105,12 @@ pub struct CosmicCompConfig {
     pub activation_policy: ActivationPolicy,
     /// FancyZones-style user-defined snap zones
     pub zones: zones::ZonesConfig,
+    /// Where each app was last snapped, for `zones.remember_apps`.
+    ///
+    /// Its own key rather than part of `zones`: this is rewritten on every
+    /// drop-snap, and sharing a key with the editor-authored layouts made the
+    /// two clobber each other.
+    pub zone_app_memory: zones::AppZoneMemories,
 }
 
 impl Default for CosmicCompConfig {
@@ -144,6 +150,7 @@ impl Default for CosmicCompConfig {
             cursor_hide_timeout: None,
             activation_policy: ActivationPolicy::default(),
             zones: zones::ZonesConfig::default(),
+            zone_app_memory: zones::AppZoneMemories::new(),
         }
     }
 }

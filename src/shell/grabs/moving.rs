@@ -66,6 +66,11 @@ pub struct MoveGrabState {
     previous: ManagedLayer,
     snapping_zone: Option<SnappingZone>,
     zones: Option<ZoneDragState>,
+    /// Output [`Self::zones`] was resolved for, recorded even when resolving
+    /// produced nothing. Resolving to `None` is the *default* state — zones
+    /// ship enabled but no layout is assigned until the user picks one — so
+    /// without this marker a miss would be retried on every motion event.
+    zones_output: Option<Output>,
     stacking_indicator: Option<(StackHover, Point<i32, Logical>)>,
     location: Point<f64, Logical>,
     cursor_output: Output,
@@ -81,11 +86,29 @@ pub struct ZoneDragState {
     output: Output,
     context: ZoneContext,
     target: Option<ZoneHit>,
+    /// Whether the arming modifier is held right now. Releasing it disarms
+    /// rather than discarding: the modifier gets tapped mid-drag, and the
+    /// badges are real elements — rebuilding one per zone on every tap is
+    /// churn for no visible benefit.
+    armed: bool,
     /// Fill opacity for non-targeted zones, from `ZonesConfig::inactive_opacity`.
     inactive_alpha: f32,
     /// One badge per zone, built once when the drag arms rather than per frame.
     /// Empty when `show_zone_numbers` is off.
     numbers: Vec<ZoneNumber>,
+}
+
+impl ZoneDragState {
+    /// Undo the `output_enter` each badge was created with.
+    ///
+    /// Entering an output is what puts an `IcedElement` on that output's
+    /// element list; the leave has to be paired or the output keeps tracking
+    /// elements that will never render again.
+    fn output_leave(&self) {
+        for number in &self.numbers {
+            number.output_leave(&self.output);
+        }
+    }
 }
 
 impl MoveGrabState {
@@ -285,6 +308,7 @@ impl MoveGrabState {
         }
 
         if let Some(zones) = &self.zones
+            && zones.armed
             && &self.cursor_output == output
         {
             let base_color = theme.palette.neutral_9;
@@ -312,9 +336,57 @@ impl MoveGrabState {
                 );
             }
 
-            // Every zone, dimmed, so the whole layout is legible the moment
-            // the modifier goes down.
+            // The drop target, above the dim layer. This list is front-to-back
+            // — the first element pushed is the topmost — so the target has to
+            // be pushed *before* the backdrops it is meant to stand out from,
+            // and its border before its own fill.
+            if let Some(target) = zones.target.as_ref() {
+                let key = Key::Window(Usage::ZoneIndicator(ZONE_TARGET_KEY), self.window.key());
+                push(
+                    IndicatorShader::element(
+                        renderer,
+                        key.clone(),
+                        target.geometry,
+                        thickness,
+                        radii,
+                        1.0,
+                        output_scale.x,
+                        [
+                            active_window_hint.red,
+                            active_window_hint.green,
+                            active_window_hint.blue,
+                        ],
+                    )
+                    .into(),
+                );
+                push(
+                    BackdropShader::element(
+                        renderer,
+                        key,
+                        target.geometry,
+                        theme.radius_s()[0],
+                        SNAP_OVERLAY_ALPHA,
+                        [base_color.red, base_color.green, base_color.blue],
+                    )
+                    .into(),
+                );
+            }
+
+            // Every other zone, dimmed, so the whole layout is legible the
+            // moment the modifier goes down. Zones inside the target are
+            // skipped: stacking the dim under the target fill would tint it,
+            // and the point is that the target reads at exactly the alpha edge
+            // snapping uses.
+            let targeted = |idx: usize| {
+                zones
+                    .target
+                    .as_ref()
+                    .is_some_and(|target| target.zones.contains(&idx))
+            };
             for (idx, geo) in zones.context.geometries().enumerate() {
+                if targeted(idx) {
+                    continue;
+                }
                 push(
                     BackdropShader::element(
                         renderer,
@@ -326,40 +398,6 @@ impl MoveGrabState {
                         theme.radius_s()[0],
                         zones.inactive_alpha,
                         [base_color.red, base_color.green, base_color.blue],
-                    )
-                    .into(),
-                );
-            }
-
-            // The drop target on top. For a span this is the union rectangle,
-            // not the individual zones, so it reads as one destination.
-            if let Some(target) = zones.target.as_ref() {
-                let key = Key::Window(Usage::ZoneIndicator(ZONE_TARGET_KEY), self.window.key());
-                push(
-                    BackdropShader::element(
-                        renderer,
-                        key.clone(),
-                        target.geometry,
-                        theme.radius_s()[0],
-                        SNAP_OVERLAY_ALPHA,
-                        [base_color.red, base_color.green, base_color.blue],
-                    )
-                    .into(),
-                );
-                push(
-                    IndicatorShader::element(
-                        renderer,
-                        key,
-                        target.geometry,
-                        thickness,
-                        radii,
-                        1.0,
-                        output_scale.x,
-                        [
-                            active_window_hint.red,
-                            active_window_hint.green,
-                            active_window_hint.blue,
-                        ],
                     )
                     .into(),
                 );
@@ -593,11 +631,16 @@ impl MoveGrab {
                     // the modifier is held, rather than competing with it.
                     grab_state.snapping_zone = None;
 
-                    let stale = grab_state
-                        .zones
-                        .as_ref()
-                        .is_none_or(|zones| zones.output != current_output);
-                    if stale {
+                    // Keyed on the output rather than on `zones` being `Some`,
+                    // so a layout that resolves to nothing is remembered as a
+                    // miss instead of being re-resolved — and re-missed — on
+                    // every pointer event.
+                    if grab_state.zones_output.as_ref() != Some(&current_output) {
+                        if let Some(previous) = grab_state.zones.take() {
+                            previous.output_leave();
+                        }
+                        grab_state.zones_output = Some(current_output.clone());
+
                         let gaps = {
                             let gaps = state.common.theme.cosmic().gaps;
                             zones_config.gaps_or((gaps.0 as i32, gaps.1 as i32))
@@ -632,6 +675,7 @@ impl MoveGrab {
                                 output: current_output.clone(),
                                 context,
                                 target: None,
+                                armed: true,
                                 inactive_alpha: (zones_config.inactive_opacity.min(100) as f32
                                     / 100.0)
                                     * SNAP_OVERLAY_ALPHA,
@@ -641,6 +685,7 @@ impl MoveGrab {
                     }
 
                     if let Some(zones) = grab_state.zones.as_mut() {
+                        zones.armed = true;
                         let point = location
                             .as_global()
                             .to_local(&current_output)
@@ -652,7 +697,13 @@ impl MoveGrab {
                     return;
                 }
 
-                grab_state.zones = None;
+                // Disarm rather than discard, so tapping the modifier off and
+                // on again does not rebuild every badge. Clearing the target is
+                // what stops the drop from snapping to a zone.
+                if let Some(zones) = grab_state.zones.as_mut() {
+                    zones.armed = false;
+                    zones.target = None;
+                }
                 let output_geometry = current_output.geometry().to_local(&current_output);
                 grab_state.snapping_zone = [
                     SnappingZone::Maximize,
@@ -930,6 +981,7 @@ impl MoveGrab {
             stacking_indicator: None,
             snapping_zone: None,
             zones: None,
+            zones_output: None,
             previous: previous_layer,
             location: start_data.location(),
             cursor_output: cursor_output.clone(),
@@ -995,6 +1047,13 @@ impl Drop for MoveGrab {
                     .get::<SeatMoveGrabState>()
                     .and_then(|s| s.lock().unwrap().take())
             {
+                // Pairs the `output_enter` each zone badge was created with.
+                // The badges are about to be dropped either way, but the output
+                // keeps its own list of entered elements.
+                if let Some(zones) = grab_state.zones.as_ref() {
+                    zones.output_leave();
+                }
+
                 if grab_state.window.alive() {
                     let window_location =
                         (grab_state.location.to_i32_round() + grab_state.window_offset).as_global();
@@ -1204,21 +1263,31 @@ impl Drop for MoveGrab {
 /// Writes through cosmic-config so the setting survives a restart, and updates
 /// the in-memory copy so it takes effect without waiting for the config watch
 /// to fire.
+///
+/// This fires on every zone drop-snap, which is why it has its own key: written
+/// into the `zones` blob it would rewrite the user's layouts from whatever
+/// snapshot this process last read, and an editor save landing in between would
+/// be silently undone.
 fn remember_app_zone(state: &mut State, app_id: String, layout: String, zones: Vec<usize>) {
     if app_id.is_empty() || !state.common.config.cosmic_conf.zones.remember_apps {
         return;
     }
 
     let memory = AppZoneMemory { layout, zones };
-    let zones_conf = &mut state.common.config.cosmic_conf.zones;
-    if zones_conf.app_memory.get(&app_id) == Some(&memory) {
+    let memories = &mut state.common.config.cosmic_conf.zone_app_memory;
+    if memories.get(&app_id) == Some(&memory) {
         return;
     }
-    zones_conf.app_memory.insert(app_id, memory);
+    memories.insert(app_id, memory);
 
-    let snapshot = zones_conf.clone();
-    if let Err(err) = state.common.config.cosmic_helper.set("zones", &snapshot) {
+    let snapshot = memories.clone();
+    if let Err(err) = state
+        .common
+        .config
+        .cosmic_helper
+        .set("zone_app_memory", &snapshot)
+    {
         warn!(?err, "failed to persist app zone memory");
     }
-    state.common.shell.write().set_zones_config(snapshot);
+    state.common.shell.write().set_zone_app_memory(snapshot);
 }
