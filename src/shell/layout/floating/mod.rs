@@ -321,17 +321,14 @@ impl FloatingTiled {
 /// gutter instead of doubling it. Applied to halves and quarters this
 /// reproduces `TiledCorners::relative_geometry` exactly, which is what keeps
 /// zone-snapped and corner-snapped windows visually consistent.
-fn zone_relative_geometry(
+pub(crate) fn zone_relative_geometry(
     rect: ZoneRect,
     output_geometry: Rectangle<i32, Logical>,
     gaps: (i32, i32),
 ) -> Rectangle<i32, Local> {
     let (_, inner) = gaps;
     let rect = rect.clamped();
-    let (ow, oh) = (
-        output_geometry.size.w as f64,
-        output_geometry.size.h as f64,
-    );
+    let (ow, oh) = (output_geometry.size.w as f64, output_geometry.size.h as f64);
     // Integer division, deliberately: `TiledCorners` truncates an odd gap
     // (`inner / 2`) rather than rounding it, and lets the window size absorb
     // the leftover pixel. Using float division here puts zone-snapped windows
@@ -344,12 +341,10 @@ fn zone_relative_geometry(
         }
     };
     // Floor for the same reason: `size.w / 2` truncates on odd output sizes.
-    let x0 = output_geometry.loc.x as f64
-        + (rect.x * ow).floor()
-        + gap(rect.x <= ZONE_EDGE_TOLERANCE);
-    let y0 = output_geometry.loc.y as f64
-        + (rect.y * oh).floor()
-        + gap(rect.y <= ZONE_EDGE_TOLERANCE);
+    let x0 =
+        output_geometry.loc.x as f64 + (rect.x * ow).floor() + gap(rect.x <= ZONE_EDGE_TOLERANCE);
+    let y0 =
+        output_geometry.loc.y as f64 + (rect.y * oh).floor() + gap(rect.y <= ZONE_EDGE_TOLERANCE);
     let x1 = output_geometry.loc.x as f64 + (rect.right() * ow).floor()
         - gap(rect.right() >= 1.0 - ZONE_EDGE_TOLERANCE);
     let y1 = output_geometry.loc.y as f64 + (rect.bottom() * oh).floor()
@@ -1871,11 +1866,8 @@ mod tests {
                     Point::<i32, Logical>::from((-250, -13)),
                     Size::<i32, Logical>::from((w, h)),
                 );
-                let full = zone_relative_geometry(
-                    ZoneRect::new(0.0, 0.0, 1.0, 1.0),
-                    output,
-                    (0, inner),
-                );
+                let full =
+                    zone_relative_geometry(ZoneRect::new(0.0, 0.0, 1.0, 1.0), output, (0, inner));
                 assert_eq!(full.loc.x, output.loc.x + inner, "{w}x{h} inner={inner}");
                 assert_eq!(full.loc.y, output.loc.y + inner, "{w}x{h} inner={inner}");
                 assert_eq!(full.size.w, w - inner * 2, "{w}x{h} inner={inner}");
@@ -1913,11 +1905,7 @@ mod tests {
             Point::<i32, Logical>::from((0, 0)),
             Size::<i32, Logical>::from((1920, 1080)),
         );
-        let sliver = zone_relative_geometry(
-            ZoneRect::new(0.0, 0.0, 0.005, 0.005),
-            output,
-            (0, 64),
-        );
+        let sliver = zone_relative_geometry(ZoneRect::new(0.0, 0.0, 0.005, 0.005), output, (0, 64));
         assert!(sliver.size.w >= 1 && sliver.size.h >= 1, "{sliver:?}");
     }
 }

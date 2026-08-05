@@ -142,6 +142,8 @@ pub enum Usage {
     FocusIndicator,
     PotentialGroupIndicator,
     SnappingIndicator,
+    /// Per-zone overlay drawn while a zone-snapping drag is active.
+    ZoneIndicator(u8),
     Border,
 }
 

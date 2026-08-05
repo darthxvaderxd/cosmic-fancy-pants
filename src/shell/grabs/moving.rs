@@ -9,6 +9,7 @@ use crate::{
         element::{CosmicMappedRenderElement, stack_hover::StackHover},
         focus::target::{KeyboardFocusTarget, PointerFocusTarget},
         layout::floating::TiledCorners,
+        zones::{self, ZoneContext, ZoneHit},
     },
     utils::prelude::*,
     wayland::protocols::toplevel_info::{toplevel_enter_output, toplevel_enter_workspace},
@@ -60,9 +61,24 @@ pub struct MoveGrabState {
     start: Instant,
     previous: ManagedLayer,
     snapping_zone: Option<SnappingZone>,
+    zones: Option<ZoneDragState>,
     stacking_indicator: Option<(StackHover, Point<i32, Logical>)>,
     location: Point<f64, Logical>,
     cursor_output: Output,
+}
+
+/// Live state for a drag that has armed user-defined zone snapping.
+///
+/// The resolved [`ZoneContext`] is cached here rather than rebuilt per motion
+/// event, since resolving clones the layout and measures the layer map.
+pub struct ZoneDragState {
+    /// Output the context was resolved against; a cursor crossing to another
+    /// output invalidates it.
+    output: Output,
+    context: ZoneContext,
+    target: Option<ZoneHit>,
+    /// Fill opacity for non-targeted zones, from `ZonesConfig::inactive_opacity`.
+    inactive_alpha: f32,
 }
 
 impl MoveGrabState {
@@ -254,11 +270,76 @@ impl MoveGrabState {
                     Key::Window(Usage::SnappingIndicator, self.window.key()),
                     t.overlay_geometry(non_exclusive_geometry, gaps),
                     theme.radius_s()[0], // TODO: Fix once shaders support 4 corner radii customization
-                    0.4,
+                    SNAP_OVERLAY_ALPHA,
                     [base_color.red, base_color.green, base_color.blue],
                 )
                 .into(),
             )
+        }
+
+        if let Some(zones) = &self.zones
+            && &self.cursor_output == output
+        {
+            let base_color = theme.palette.neutral_9;
+            let radii = [
+                theme.radius_s()[0] as u8,
+                theme.radius_s()[1] as u8,
+                theme.radius_s()[2] as u8,
+                theme.radius_s()[3] as u8,
+            ];
+
+            // Every zone, dimmed, so the whole layout is legible the moment
+            // the modifier goes down.
+            for (idx, geo) in zones.context.geometries().enumerate() {
+                push(
+                    BackdropShader::element(
+                        renderer,
+                        Key::Window(
+                            Usage::ZoneIndicator(idx.min(ZONE_KEY_MAX) as u8),
+                            self.window.key(),
+                        ),
+                        geo,
+                        theme.radius_s()[0],
+                        zones.inactive_alpha,
+                        [base_color.red, base_color.green, base_color.blue],
+                    )
+                    .into(),
+                );
+            }
+
+            // The drop target on top. For a span this is the union rectangle,
+            // not the individual zones, so it reads as one destination.
+            if let Some(target) = zones.target.as_ref() {
+                let key = Key::Window(Usage::ZoneIndicator(ZONE_TARGET_KEY), self.window.key());
+                push(
+                    BackdropShader::element(
+                        renderer,
+                        key.clone(),
+                        target.geometry,
+                        theme.radius_s()[0],
+                        SNAP_OVERLAY_ALPHA,
+                        [base_color.red, base_color.green, base_color.blue],
+                    )
+                    .into(),
+                );
+                push(
+                    IndicatorShader::element(
+                        renderer,
+                        key,
+                        target.geometry,
+                        thickness,
+                        radii,
+                        1.0,
+                        output_scale.x,
+                        [
+                            active_window_hint.red,
+                            active_window_hint.green,
+                            active_window_hint.blue,
+                        ],
+                    )
+                    .into(),
+                );
+            }
         }
     }
 
@@ -286,6 +367,15 @@ pub enum SnappingZone {
     Right,
     TopRight,
 }
+
+/// Fill opacity of the highlighted drop target, shared by edge snapping and
+/// zone snapping so the two look like the same mechanism.
+const SNAP_OVERLAY_ALPHA: f32 = 0.4;
+/// Shader cache keys are one byte, so zones past this share a key. Harmless:
+/// the key only scopes a cache entry, and layouts this large are pathological.
+const ZONE_KEY_MAX: usize = 254;
+/// Reserved key for the drop-target overlay.
+const ZONE_TARGET_KEY: u8 = 255;
 
 const SNAP_RANGE: i32 = 32;
 const SNAP_RANGE_MAXIMIZE: i32 = 22;
@@ -468,6 +558,58 @@ impl MoveGrab {
 
             // Check for overlapping with zones
             if grab_state.previous == ManagedLayer::Floating {
+                let zones_config = &state.common.config.cosmic_conf.zones;
+                let zone_mode = zones_config.enabled
+                    && self.seat.get_keyboard().is_some_and(|keyboard| {
+                        zones::modifiers_match(&zones_config.modifier, &keyboard.modifier_state())
+                    });
+
+                if zone_mode {
+                    // User-defined zones replace edge snapping outright while
+                    // the modifier is held, rather than competing with it.
+                    grab_state.snapping_zone = None;
+
+                    let stale = grab_state
+                        .zones
+                        .as_ref()
+                        .is_none_or(|zones| zones.output != current_output);
+                    if stale {
+                        let gaps = {
+                            let gaps = state.common.theme.cosmic().gaps;
+                            (gaps.0 as i32, gaps.1 as i32)
+                        };
+                        let workspace_id = shell
+                            .active_space(&current_output)
+                            .and_then(|workspace| workspace.id.clone());
+
+                        grab_state.zones = ZoneContext::resolve(
+                            zones_config,
+                            &current_output,
+                            workspace_id.as_deref(),
+                            gaps,
+                        )
+                        .map(|context| ZoneDragState {
+                            output: current_output.clone(),
+                            context,
+                            target: None,
+                            inactive_alpha: (zones_config.inactive_opacity.min(100) as f32 / 100.0)
+                                * SNAP_OVERLAY_ALPHA,
+                        });
+                    }
+
+                    if let Some(zones) = grab_state.zones.as_mut() {
+                        let point = location
+                            .as_global()
+                            .to_local(&current_output)
+                            .to_i32_floor();
+                        zones.target = zones.context.hit(point);
+                    }
+
+                    drop(borrow);
+                    return;
+                }
+
+                grab_state.zones = None;
                 let output_geometry = current_output.geometry().to_local(&current_output);
                 grab_state.snapping_zone = [
                     SnappingZone::Maximize,
@@ -744,6 +886,7 @@ impl MoveGrab {
             start: Instant::now(),
             stacking_indicator: None,
             snapping_zone: None,
+            zones: None,
             previous: previous_layer,
             location: start_data.location(),
             cursor_output: cursor_output.clone(),

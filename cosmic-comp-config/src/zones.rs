@@ -49,7 +49,9 @@ impl ZoneRect {
     /// A zone is usable if it is finite, has positive extent, and lies within
     /// the unit square (allowing for float slop).
     pub fn is_valid(&self) -> bool {
-        [self.x, self.y, self.w, self.h].iter().all(|v| v.is_finite())
+        [self.x, self.y, self.w, self.h]
+            .iter()
+            .all(|v| v.is_finite())
             && self.w > EPSILON
             && self.h > EPSILON
             && self.x >= -EPSILON
@@ -142,7 +144,12 @@ impl ZoneLayout {
     pub fn sanitized(&self) -> Self {
         Self {
             name: self.name.clone(),
-            zones: self.zones.iter().copied().filter(|z| z.is_valid()).collect(),
+            zones: self
+                .zones
+                .iter()
+                .copied()
+                .filter(|z| z.is_valid())
+                .collect(),
         }
     }
 
@@ -388,7 +395,9 @@ pub fn columns(n: usize, name: &str) -> ZoneLayout {
     let w = 1.0 / n as f64;
     ZoneLayout::new(
         name,
-        (0..n).map(|i| ZoneRect::new(i as f64 * w, 0.0, w, 1.0)).collect(),
+        (0..n)
+            .map(|i| ZoneRect::new(i as f64 * w, 0.0, w, 1.0))
+            .collect(),
     )
 }
 
@@ -396,7 +405,9 @@ pub fn rows(n: usize, name: &str) -> ZoneLayout {
     let h = 1.0 / n as f64;
     ZoneLayout::new(
         name,
-        (0..n).map(|i| ZoneRect::new(0.0, i as f64 * h, 1.0, h)).collect(),
+        (0..n)
+            .map(|i| ZoneRect::new(0.0, i as f64 * h, 1.0, h))
+            .collect(),
     )
 }
 
@@ -592,8 +603,8 @@ mod tests {
             "junk",
             vec![
                 ZoneRect::new(0.0, 0.0, 0.5, 1.0),
-                ZoneRect::new(0.0, 0.0, 0.0, 1.0),  // zero width
-                ZoneRect::new(0.5, 0.0, 2.0, 1.0),  // out of bounds
+                ZoneRect::new(0.0, 0.0, 0.0, 1.0), // zero width
+                ZoneRect::new(0.5, 0.0, 2.0, 1.0), // out of bounds
                 ZoneRect::new(f64::NAN, 0.0, 0.5, 1.0),
             ],
         );
