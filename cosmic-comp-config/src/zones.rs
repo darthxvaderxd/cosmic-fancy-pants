@@ -381,6 +381,19 @@ pub struct AppZoneMemory {
 /// user-authored layouts — so separating them shrinks the frequent write too.
 pub type AppZoneMemories = HashMap<String, AppZoneMemory>;
 
+/// Reader for the pre-split `zones` key, used once at startup to move app
+/// memory across without losing it.
+///
+/// A partial view rather than a field on [`ZonesConfig`]: serde ignores the
+/// rest of the blob, so this reads the one legacy field without carrying it
+/// around in the live config type. Delete this once no configs predate the
+/// split.
+#[derive(Debug, Default, Deserialize)]
+pub struct LegacyZones {
+    #[serde(default)]
+    pub app_memory: AppZoneMemories,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ZonesConfig {
     pub enabled: bool,
@@ -1005,5 +1018,28 @@ mod tests {
         );
         let decoded: ZonesConfig = ron::from_str(&with_old_field).expect("should still parse");
         assert_eq!(decoded, cfg);
+    }
+
+    /// Ignoring the old field is only safe because something rescues it first.
+    /// `LegacyZones` has to find `app_memory` in a pre-split config while
+    /// ignoring every other field in the blob, and find nothing in a
+    /// post-split one so the migration does not re-run.
+    #[test]
+    fn the_legacy_reader_finds_app_memory_to_migrate() {
+        let encoded = ron::ser::to_string(&ZonesConfig::default()).expect("serialize");
+        let pre_split = encoded.replacen(
+            "enabled:",
+            "app_memory:{\"com.example.App\":(layout:\"columns-3\",zones:[1])},enabled:",
+            1,
+        );
+
+        let legacy: LegacyZones = ron::from_str(&pre_split).expect("should parse");
+        assert_eq!(legacy.app_memory["com.example.App"].zones, vec![1]);
+
+        let current: LegacyZones = ron::from_str(&encoded).expect("should parse");
+        assert!(
+            current.app_memory.is_empty(),
+            "a post-split config has nothing to migrate"
+        );
     }
 }

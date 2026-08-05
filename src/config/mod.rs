@@ -9,7 +9,7 @@ use crate::{
     },
 };
 use anyhow::Context;
-use cosmic_config::{ConfigGet, CosmicConfigEntry};
+use cosmic_config::{ConfigGet, ConfigSet, CosmicConfigEntry};
 use cosmic_settings_config::window_rules::ApplicationException;
 use cosmic_settings_config::{Shortcuts, shortcuts, window_rules};
 use serde::{Deserialize, Serialize};
@@ -179,7 +179,7 @@ impl Config {
             .expect("Failed to add cosmic-config to the event loop");
         let xdg = xdg::BaseDirectories::new();
 
-        let cosmic_comp_config =
+        let mut cosmic_comp_config =
             CosmicCompConfig::get_entry(&config).unwrap_or_else(|(errs, c)| {
                 if cfg!(debug_assertions) {
                     for err in errs {
@@ -188,6 +188,7 @@ impl Config {
                 }
                 c
             });
+        migrate_zone_app_memory(&config, &mut cosmic_comp_config);
 
         // Listen for updates to the toolkit config
         if let Ok(tk_config) = cosmic_config::Config::new("com.system76.CosmicTk", 1) {
@@ -751,6 +752,43 @@ fn get_config<T: Default + serde::de::DeserializeOwned>(
         error!(?err, "Failed to read config '{}'", key);
         T::default()
     })
+}
+
+/// Move app zone memory out of the `zones` blob and into its own key.
+///
+/// App memory used to live inside `zones`; it was split out so a drop-snap and
+/// an editor save stop clobbering each other. Without this, upgrading would
+/// silently drop whatever `remember_apps` had recorded.
+///
+/// Runs only when the new key is empty and the old field is not. The `zones`
+/// key is rewritten as part of the move, so the legacy field is gone
+/// afterwards — otherwise deleting `zone_app_memory` to clear the memory, as
+/// INSTALL.md describes, would resurrect it on the next start.
+fn migrate_zone_app_memory(config: &cosmic_config::Config, conf: &mut CosmicCompConfig) {
+    if !conf.zone_app_memory.is_empty() {
+        return;
+    }
+    let Ok(legacy) = config.get::<zones::LegacyZones>("zones") else {
+        return;
+    };
+    if legacy.app_memory.is_empty() {
+        return;
+    }
+
+    if let Err(err) = config.set("zone_app_memory", &legacy.app_memory) {
+        error!(?err, "failed to migrate app zone memory to its own key");
+        return;
+    }
+    // Drops the legacy field: `ZonesConfig` no longer has it, so writing the
+    // value we already parsed is what rewrites the key without it.
+    if let Err(err) = config.set("zones", &conf.zones) {
+        warn!(?err, "app zone memory migrated, but the old copy remains");
+    }
+    tracing::info!(
+        apps = legacy.app_memory.len(),
+        "migrated app zone memory to the zone_app_memory key"
+    );
+    conf.zone_app_memory = legacy.app_memory;
 }
 
 fn update_input(state: &mut State) {
