@@ -10,7 +10,7 @@ use cosmic::{
 };
 use cosmic_comp_config::zones::ZonesConfig;
 
-use crate::state::{Editor, Message};
+use crate::state::{Editor, Message, Scope};
 
 /// Gap drawn in the preview when the setting follows the COSMIC theme. The
 /// editor cannot read the compositor's theme, so this only has to look
@@ -42,6 +42,8 @@ pub fn view(app: &Editor, id: cosmic::iced::window::Id) -> Element<'_, Message> 
         output.logical_size,
         &layout.name,
         &app.config,
+        app.scope,
+        app.workspace.is_some(),
     );
 
     widget::container(
@@ -94,12 +96,41 @@ fn gap_control<'a>(config: &'a ZonesConfig) -> Element<'a, Message> {
         .into()
 }
 
+/// Whether Save applies to the monitor or to the active workspace.
+///
+/// The workspace option is only offered when the compositor told us which
+/// workspace we were opened on; launched from the app library it has no way to
+/// know, so the choice is hidden rather than shown broken.
+fn scope_control<'a>(scope: Scope, workspace_known: bool) -> Element<'a, Message> {
+    if !workspace_known {
+        return widget::space::horizontal().width(Length::Fixed(0.0)).into();
+    }
+
+    let option = |label: &'a str, value: Scope| {
+        let mut button = widget::button::standard(label);
+        if scope != value {
+            button = button.on_press(Message::SetScope(value));
+        }
+        button
+    };
+
+    widget::Row::new()
+        .push(widget::text::body("Apply to"))
+        .push(option("Monitor", Scope::Output))
+        .push(option("Workspace", Scope::Workspace))
+        .spacing(4)
+        .align_y(Alignment::Center)
+        .into()
+}
+
 fn toolbar<'a>(
     id: cosmic::iced::window::Id,
     output_name: &'a str,
     logical_size: (u32, u32),
     layout_name: &'a str,
     config: &'a ZonesConfig,
+    scope: Scope,
+    workspace_known: bool,
 ) -> Element<'a, Message> {
     // Stable ordering: HashMap iteration order would reshuffle the picker on
     // every redraw.
@@ -130,6 +161,8 @@ fn toolbar<'a>(
             )))
             .push(widget::space::horizontal())
             .push(picker)
+            .push(widget::space::horizontal().width(Length::Fixed(16.0)))
+            .push(scope_control(scope, workspace_known))
             .push(widget::space::horizontal().width(Length::Fixed(16.0)))
             .push(gap_control(config))
             .push(widget::space::horizontal().width(Length::Fixed(16.0)))

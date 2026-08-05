@@ -1053,7 +1053,16 @@ impl State {
     fn handle_zone_action(&mut self, action: ZoneAction, seat: &Seat<State>) {
         match action {
             ZoneAction::OpenEditor => {
-                self.spawn_command(ZONE_EDITOR_COMMAND.into());
+                // The editor cannot discover workspace ids on its own — they
+                // are compositor-internal — so pass the active one along. An
+                // id is allocated lazily, as assignment does, since most
+                // workspaces have none until something needs to name them.
+                let workspace_id = self.active_workspace_id(seat);
+                let command = match workspace_id {
+                    Some(id) => format!("{ZONE_EDITOR_COMMAND} --workspace {id}"),
+                    None => ZONE_EDITOR_COMMAND.to_string(),
+                };
+                self.spawn_command(command);
                 return;
             }
             ZoneAction::AssignToWorkspace | ZoneAction::ClearWorkspace => {
@@ -1135,6 +1144,27 @@ impl State {
                 gap: context.gap(),
             },
         );
+    }
+
+    /// Id of the active workspace, allocating one if it does not have it yet.
+    ///
+    /// `Workspace::id` is only populated for pinned workspaces, so an id is
+    /// assigned on demand and published over the workspace protocol the same
+    /// way pinning does.
+    fn active_workspace_id(&mut self, seat: &Seat<State>) -> Option<String> {
+        let output = seat.focused_or_active_output();
+        let mut shell = self.common.shell.write();
+        let mut update = self.common.workspace_state.update();
+        let workspace = shell.active_space_mut(&output)?;
+        match workspace.id.clone() {
+            Some(id) => Some(id),
+            None => {
+                let id = crate::shell::random_workspace_id();
+                let _ = update.set_id(&workspace.handle, &id);
+                workspace.id = Some(id.clone());
+                Some(id)
+            }
+        }
     }
 
     /// Pin the current monitor layout to the active workspace, or clear it.

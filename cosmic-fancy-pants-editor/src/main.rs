@@ -21,7 +21,15 @@ fn main() -> cosmic::iced::Result {
         )
         .init();
 
+    // Workspace ids are compositor-internal, so the compositor passes the
+    // active one when it launches us. Absent — launched from the app library —
+    // only per-monitor assignment is offered.
+    let workspace = std::env::args()
+        .skip_while(|arg| arg != "--workspace")
+        .nth(1)
+        .filter(|id| !id.is_empty());
+
     // No initial window: every surface this app creates is a layer shell
     // overlay bound to a specific output.
-    cosmic::app::run::<state::Editor>(Settings::default().no_main_window(true), ())
+    cosmic::app::run::<state::Editor>(Settings::default().no_main_window(true), workspace)
 }

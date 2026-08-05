@@ -68,6 +68,8 @@ pub enum Message {
     ZonesEdited(cosmic::iced::window::Id, Vec<ZoneRect>),
     /// Adjust the gap between snapped windows, in logical pixels.
     SetGap(Option<u32>),
+    /// Choose whether Save assigns to the monitor or the active workspace.
+    SetScope(Scope),
     Save,
     Cancel,
 }
@@ -80,8 +82,21 @@ pub struct OutputInfoLite {
     pub logical_size: (u32, u32),
 }
 
+/// What a Save applies the chosen layout to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Assign to the monitor, the default and always available.
+    Output,
+    /// Assign to the workspace that was active when the editor opened.
+    Workspace,
+}
+
 pub struct Editor {
     core: Core,
+    /// Workspace the compositor was on when it launched us, if it told us.
+    /// `None` means workspace assignment is unavailable.
+    pub workspace: Option<String>,
+    pub scope: Scope,
     /// Working copy. Edits mutate this; `Save` writes it out, `Cancel` drops it.
     pub config: ZonesConfig,
     pub outputs: HashMap<cosmic::iced::window::Id, EditorOutput>,
@@ -168,10 +183,24 @@ impl Editor {
         };
 
         // Record each overlay's selection before writing.
-        for output in self.outputs.values() {
-            self.config
-                .per_output
-                .insert(output.output_match(), output.layout_id.clone());
+        match (self.scope, self.workspace.clone()) {
+            (Scope::Workspace, Some(workspace)) => {
+                // A workspace has one layout, so only the output the editor was
+                // opened on can meaningfully claim it. Assigning every overlay
+                // would have the last one silently win.
+                if let Some(output) = self.outputs.values().next() {
+                    self.config
+                        .per_workspace
+                        .insert(workspace, output.layout_id.clone());
+                }
+            }
+            _ => {
+                for output in self.outputs.values() {
+                    self.config
+                        .per_output
+                        .insert(output.output_match(), output.layout_id.clone());
+                }
+            }
         }
 
         match handle.set(ZONES_KEY, &self.config) {
@@ -238,7 +267,7 @@ impl Editor {
 
 impl cosmic::Application for Editor {
     type Executor = cosmic::executor::Default;
-    type Flags = ();
+    type Flags = Option<String>;
     type Message = Message;
 
     const APP_ID: &'static str = "dev.nilfactor.CosmicFancyPantsEditor";
@@ -251,11 +280,13 @@ impl cosmic::Application for Editor {
         &mut self.core
     }
 
-    fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Self::Message>) {
+    fn init(core: Core, workspace: Self::Flags) -> (Self, Task<Self::Message>) {
         let (config_handle, config) = Self::load_config();
         (
             Self {
                 core,
+                workspace,
+                scope: Scope::Output,
                 config,
                 outputs: HashMap::new(),
                 config_handle,
@@ -339,6 +370,10 @@ impl cosmic::Application for Editor {
             }
             Message::SetGap(gap) => {
                 self.config.gap = gap;
+                Task::none()
+            }
+            Message::SetScope(scope) => {
+                self.scope = scope;
                 Task::none()
             }
             Message::Save => self.save(),
